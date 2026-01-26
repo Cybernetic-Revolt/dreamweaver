@@ -587,6 +587,100 @@ All tests must pass:
 
 ---
 
+## Day 5: Universal Commands
+
+### U1: Repeat Replays Last Narration
+
+**Preconditions:** Game in progress, previous narration played
+
+**Steps:**
+1. Player says "look around" (gets narration)
+2. Player says "repeat"
+
+**Expected:**
+- [ ] Exact same narration text replayed
+- [ ] Choices match original
+- [ ] No state change from repeat
+- [ ] Response within normal latency
+
+---
+
+### U2: Stop Interrupts Narration
+
+**Preconditions:** AI narration playing
+
+**Steps:**
+1. AI begins narrating
+2. Player says "stop"
+
+**Expected:**
+- [ ] Narration stops within 250ms
+- [ ] AI says "Okay."
+- [ ] Quiet mode activated for 60 seconds
+- [ ] NARRATION_INTERRUPT event logged
+
+---
+
+### U3: Help Returns Command List
+
+**Preconditions:** Game in progress
+
+**Steps:**
+1. Player says "help"
+
+**Expected:**
+- [ ] AI lists available commands
+- [ ] Response is single narration (< 12 seconds)
+- [ ] Includes: look, go, take, talk, inventory, status, repeat, stop
+- [ ] 2 choices max in response
+
+---
+
+### U4: Inventory Stays Under 12 Seconds
+
+**Preconditions:** Player has 10+ items in inventory
+
+**Steps:**
+1. Player says "inventory"
+
+**Expected:**
+- [ ] Narration lists items (up to 5)
+- [ ] Remaining count mentioned if > 5 items
+- [ ] Total narration < 12 seconds
+- [ ] No truncation artifacts
+
+---
+
+### U5: Unknown Intent Gets 2 Choices
+
+**Preconditions:** Game in progress
+
+**Steps:**
+1. Player says "xyzzy flurble nonsense"
+
+**Expected:**
+- [ ] AI responds with "I didn't understand that."
+- [ ] Exactly 2 choices offered (help, look)
+- [ ] No lecture about valid commands
+- [ ] Latency similar to valid commands
+
+---
+
+### U6: Status Shows Current State
+
+**Preconditions:** Game in progress at forest clearing, 2 items in inventory
+
+**Steps:**
+1. Player says "status"
+
+**Expected:**
+- [ ] Location name mentioned
+- [ ] Current quest step mentioned
+- [ ] Item count mentioned
+- [ ] Response under 12 seconds
+
+---
+
 ## Bug Severity Classification
 
 | Severity | Definition | Action |

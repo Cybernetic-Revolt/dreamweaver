@@ -9,10 +9,12 @@
  * - Event ingestion from agent
  * - PTT session window management
  * - Async narration delivery via Redis pub/sub
+ * - Intent parsing and deterministic GM (Day 5)
  */
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { Database } from 'bun:sqlite';
 import { createClient, type RedisClientType } from 'redis';
 import {
   CONSTANTS,
@@ -23,14 +25,57 @@ import {
   type CommandReceived,
   type CommandTranscribed,
   type NarrationReady,
+  type NarrationInterrupt,
+  createInitialState,
+  type GameState,
 } from '@dreamweaver/shared';
-import {
-  validateGMResponse,
-  getFallbackResponse,
-  type GMResponse,
-} from '@dreamweaver/shared/gm_policy';
+import { validateGMResponse } from '@dreamweaver/shared/gm_policy';
+import { parseIntent, describeIntent } from './intent';
+import { processIntent } from './gm';
 
 const app = new Hono();
+
+// ============================================================================
+// SQLite Database (Game State)
+// ============================================================================
+
+const DATABASE_PATH = process.env.DATABASE_PATH || './data/dreamweaver.db';
+const db = new Database(DATABASE_PATH, { create: true });
+
+// Initialize tables
+db.run(`
+  CREATE TABLE IF NOT EXISTS game_states (
+    room_name TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+`);
+
+function getGameState(roomName: string): GameState | null {
+  const row = db.query('SELECT state_json FROM game_states WHERE room_name = ?').get(roomName) as { state_json: string } | null;
+  if (!row) return null;
+  return JSON.parse(row.state_json) as GameState;
+}
+
+function saveGameState(state: GameState): void {
+  const now = Date.now();
+  db.run(
+    `INSERT INTO game_states (room_name, state_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(room_name) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at`,
+    [state.roomName, JSON.stringify(state), now, now]
+  );
+}
+
+function getOrCreateGameState(roomName: string, sessionId: string): GameState {
+  let state = getGameState(roomName);
+  if (!state) {
+    state = createInitialState(sessionId, roomName);
+    saveGameState(state);
+  }
+  return state;
+}
 
 // ============================================================================
 // Redis Client (for async narration delivery)
@@ -73,6 +118,29 @@ async function publishNarration(roomName: string, narration: NarrationReady): Pr
     console.error(JSON.stringify({
       level: 'error',
       msg: 'narration_publish_failed',
+      error: String(err),
+    }));
+  }
+}
+
+/**
+ * Publish interruption event to Redis.
+ */
+async function publishInterruption(roomName: string, interrupt: NarrationInterrupt): Promise<void> {
+  try {
+    const client = await getRedis();
+    const channel = `${CONSTANTS.REDIS_NARRATION_CHANNEL_PREFIX}${roomName}`;
+    await client.publish(channel, JSON.stringify(interrupt));
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'interruption_published',
+      channel,
+      trace_id: interrupt.traceId,
+    }));
+  } catch (err) {
+    console.error(JSON.stringify({
+      level: 'error',
+      msg: 'interruption_publish_failed',
       error: String(err),
     }));
   }
@@ -163,74 +231,52 @@ function closePttSession(event: PttTrackEnded): PttSession | null {
   return null;
 }
 
-function getRoomForSession(pttSessionId: string): string | undefined {
-  return sessionToRoom.get(pttSessionId);
+// ============================================================================
+// Command Processing (Day 5: Intent + GM)
+// ============================================================================
+
+interface ProcessResult {
+  commandId: string;
+  narration: NarrationReady | null;
+  latency: LatencyLog;
 }
 
-// ============================================================================
-// GM Logic (minimal for Day 3)
-// ============================================================================
-
-/**
- * Generate a GM response for a player command.
- * For Day 3, this is a simple rule-based system.
- * Will be replaced with LLM in Day 4+.
- */
-function generateGMResponse(command: string, identity: string): GMResponse {
-  const lowerCommand = command.toLowerCase().trim();
-
-  // Handle timeout/error cases
-  if (lowerCommand.includes('__timeout__') || lowerCommand.includes('__error__')) {
-    return {
-      narration: `I didn't catch that. Could you repeat what you said?`,
-      choices: ['repeat', 'skip'],
-    };
-  }
-
-  // Simple keyword-based responses for Day 3 demo
-  if (lowerCommand.includes('look') || lowerCommand.includes('examine')) {
-    return {
-      narration: `${identity}, you see a dimly lit chamber. Ancient runes glow faintly on the walls. Two passages lead deeper. Do you take the left path or the right?`,
-      choices: ['left path', 'right path'],
-    };
-  }
-
-  if (lowerCommand.includes('attack') || lowerCommand.includes('fight')) {
-    return {
-      narration: `${identity} charges into battle! The enemy staggers from your blow. Do you press the attack or fall back?`,
-      choices: ['press attack', 'fall back'],
-    };
-  }
-
-  if (lowerCommand.includes('help') || lowerCommand.includes('what')) {
-    return {
-      narration: `You can explore, fight, or talk. What action do you take?`,
-      choices: ['explore', 'talk'],
-    };
-  }
-
-  if (lowerCommand.includes('go') || lowerCommand.includes('move') || lowerCommand.includes('walk')) {
-    return {
-      narration: `${identity} moves forward cautiously. The passage opens into a wider area. Do you continue or rest here?`,
-      choices: ['continue', 'rest'],
-    };
-  }
-
-  // Default response
-  return {
-    narration: `The GM considers your words. What would you like to do, ${identity}?`,
-    choices: ['explore', 'wait'],
-  };
+interface LatencyLog {
+  trace_id: string;
+  ptt_ms: number;
+  stt_ms: number;
+  gm_ms: number;
+  tts_ms: number;  // Will be filled by agent
+  total_ms: number;
+  text_len: number;
+  narration_len: number;
+  mode: string;
+  intent: string;
 }
 
 /**
  * Process a transcribed command and generate narration.
- * Returns commandId for tracking; narration is published async via Redis.
+ * Day 5: Uses intent parser + deterministic GM + state management.
  */
-async function processCommandAsync(event: CommandTranscribed): Promise<string> {
-  const { text, identity, sessionId, pttSessionId, roomName } = event;
+async function processCommandAsync(event: CommandTranscribed): Promise<ProcessResult> {
+  const { text, identity, sessionId, pttSessionId, roomName, latencyMs } = event;
   const commandId = generateEventId();
   const traceId = pttSessionId || commandId;
+  const gmStartTime = Date.now();
+
+  // Initialize latency log
+  const latency: LatencyLog = {
+    trace_id: traceId,
+    ptt_ms: 0,  // Calculated from PTT session
+    stt_ms: latencyMs,
+    gm_ms: 0,
+    tts_ms: 0,  // Agent will log this
+    total_ms: 0,
+    text_len: text.length,
+    narration_len: 0,
+    mode: 'driving',
+    intent: 'UNKNOWN',
+  };
 
   // Validate roomName is present (required for Redis routing)
   if (!roomName) {
@@ -240,10 +286,10 @@ async function processCommandAsync(event: CommandTranscribed): Promise<string> {
       ptt_session_id: pttSessionId,
       trace_id: traceId,
     }));
-    return commandId;
+    return { commandId, narration: null, latency };
   }
 
-  // Skip placeholder/empty commands (fix: explicit boolean to avoid precedence issues)
+  // Skip placeholder/empty commands
   const isPlaceholder = text.startsWith('__') && !text.includes('timeout');
   if (!text || isPlaceholder || text.length < 2) {
     console.log(JSON.stringify({
@@ -252,14 +298,56 @@ async function processCommandAsync(event: CommandTranscribed): Promise<string> {
       text,
       trace_id: traceId,
     }));
-    return commandId;
+    return { commandId, narration: null, latency };
   }
 
-  // Generate GM response (async-safe but currently sync)
-  let gmResponse = generateGMResponse(text, identity);
+  // Get or create game state
+  let state = getOrCreateGameState(roomName, sessionId);
 
-  // Validate against driving policy
-  const validation = validateGMResponse(gmResponse);
+  // Check if in quiet mode (STOP was issued)
+  if (state.quietUntil && Date.now() < state.quietUntil) {
+    // Parse to check if it's a wake-up command
+    const intent = parseIntent(text);
+    if (intent.type !== 'HELP' && intent.type !== 'STATUS' && intent.type !== 'LOOK') {
+      console.log(JSON.stringify({
+        level: 'info',
+        msg: 'quiet_mode_active',
+        trace_id: traceId,
+        until: state.quietUntil,
+      }));
+      return { commandId, narration: null, latency };
+    }
+    // Wake-up command received, clear quiet mode
+    state.quietUntil = undefined;
+  }
+
+  // Parse intent
+  const intent = parseIntent(text);
+  latency.intent = describeIntent(intent);
+
+  console.log(JSON.stringify({
+    level: 'info',
+    msg: 'intent_parsed',
+    intent_type: intent.type,
+    intent_target: intent.target,
+    raw_text: text,
+    trace_id: traceId,
+  }));
+
+  // Process intent with GM
+  const result = processIntent(state, intent, pttSessionId, traceId);
+
+  // Calculate GM latency
+  latency.gm_ms = Date.now() - gmStartTime;
+  latency.narration_len = result.narration.text.length;
+  latency.mode = state.mode;
+
+  // Validate narration against driving policy
+  const validation = validateGMResponse({
+    narration: result.narration.text,
+    choices: result.narration.choices,
+  });
+
   if (!validation.ok) {
     console.log(JSON.stringify({
       level: 'warn',
@@ -267,42 +355,49 @@ async function processCommandAsync(event: CommandTranscribed): Promise<string> {
       violations: validation.violations,
       trace_id: traceId,
     }));
-    // Use fallback
-    gmResponse = {
-      narration: getFallbackResponse(),
-      choices: ['continue', 'wait'],
-    };
   }
 
-  // Build NarrationReady event
-  const narration: NarrationReady = {
-    type: 'NARRATION_READY',
-    eventId: generateEventId(),
-    sessionId,
-    pttSessionId,
-    text: gmResponse.narration,
-    choices: gmResponse.choices,
-    mode: 'driving',  // Always driving mode for MVP
-    ts: Date.now(),
-    traceId,  // Correlate across events
-  };
+  // Apply state updates
+  if (Object.keys(result.stateUpdates).length > 0) {
+    state = { ...state, ...result.stateUpdates };
 
+    // Save lastNarration for REPEAT
+    state.lastNarration = {
+      narrationId: result.narration.eventId,
+      text: result.narration.text,
+      choices: result.narration.choices,
+    };
+
+    saveGameState(state);
+  }
+
+  // Handle STOP intent specially - emit interruption
+  if (intent.type === 'STOP') {
+    const interrupt: NarrationInterrupt = {
+      type: 'NARRATION_INTERRUPT',
+      eventId: generateEventId(),
+      sessionId,
+      narrationId: state.lastNarration?.narrationId || '',
+      identity,
+      reason: 'stop_command',
+      ts: Date.now(),
+      traceId,
+    };
+    await publishInterruption(roomName, interrupt);
+  }
+
+  // Log latency summary
+  latency.total_ms = Date.now() - (event.ts - latencyMs);  // From PTT end to now
   console.log(JSON.stringify({
     level: 'info',
-    msg: 'narration_ready',
-    command_id: commandId,
-    ptt_session_id: pttSessionId,
-    text: narration.text.substring(0, 50),
-    choices: narration.choices,
-    trace_id: traceId,
+    msg: 'latency_summary',
+    ...latency,
   }));
 
-  // Publish to Redis asynchronously (roomName validated above)
-  publishNarration(roomName, narration).catch((err) => {
-    console.error('Failed to publish narration:', err);
-  });
+  // Publish narration to Redis
+  await publishNarration(roomName, result.narration);
 
-  return commandId;
+  return { commandId, narration: result.narration, latency };
 }
 
 // ============================================================================
@@ -331,6 +426,7 @@ app.get('/health', async (c) => {
     timestamp: Date.now(),
     services: {
       redis: redisStatus,
+      sqlite: 'healthy',
       livekit: 'pending',
     },
   });
@@ -460,11 +556,12 @@ app.post('/events', async (c) => {
         }));
 
         // Process command asynchronously, return 202 Accepted
-        const commandId = await processCommandAsync(cmd);
+        const result = await processCommandAsync(cmd);
         return c.json({
           status: 'accepted',
           event_type: event.type,
-          commandId,
+          commandId: result.commandId,
+          intent: result.latency.intent,
           // Narration will be delivered via Redis pub/sub
         }, 202);
       }
@@ -483,6 +580,19 @@ app.post('/events', async (c) => {
     console.error('event_parse_error', err);
     return c.json({ error: 'PARSE_ERROR', message: 'Invalid JSON' }, 400);
   }
+});
+
+// ============================================================================
+// Game State API (for debugging)
+// ============================================================================
+
+app.get('/api/state/:roomName', (c) => {
+  const roomName = c.req.param('roomName');
+  const state = getGameState(roomName);
+  if (!state) {
+    return c.json({ error: 'NOT_FOUND' }, 404);
+  }
+  return c.json(state);
 });
 
 // ============================================================================
@@ -520,6 +630,7 @@ app.post('/auth/token', async (c) => {
 
 const port = parseInt(process.env.PORT || '3000');
 console.log(`Dreamweaver server starting on port ${port}`);
+console.log(`SQLite database: ${DATABASE_PATH}`);
 
 // Initialize Redis connection on startup
 getRedis().catch((err) => {
