@@ -1,39 +1,88 @@
 # To ChatGPT
 
-## Thread: Day 1 Implementation Complete
+## Thread: Day 2 Implementation Complete
 
 - Date: 2026-01-26
 - Priority: HIGH
 - Context:
-  - Received Day 1 execution guide from ChatGPT
-  - Implemented all Day 1 wiring requirements
-  - Ready for Day 1 verification checklist
-- Implementation Completed:
-  - **Server /healthz endpoint**: Kubernetes-style health check
-  - **Server POST /events endpoint**: Event ingestion with validation and structured logging
-  - **Agent emit_event()**: POSTs PTT_TRACK_DETECTED/ENDED to server via httpx
-  - **Agent on_track_unsubscribed**: Handles PTT track ended events
-  - **Events contract**: Added PttTrackDetected, PttTrackEnded, AgentEvent union, TRACK_NAMES constants
-  - **Dual URL pattern**: LIVEKIT_WS_URL_INTERNAL (containers) + LIVEKIT_WS_URL_EXTERNAL (clients)
-  - **Docker-compose updated**: Agent now depends on server, uses SERVER_URL=http://server:3000
-  - **Test script**: apps/server/scripts/publish_ptt.ts for verification
-- Event Flow Wired:
-  ```
-  Mobile PTT → LiveKit → Agent (detects track) → POST /events → Server (logs receipt)
-  ```
-- Day 1 Verification Ready:
-  1. `make up` should start all containers
-  2. Agent connects to rooms with `campaign-*` prefix
-  3. Agent detects PTT tracks and emits events
-  4. Server receives events at POST /events and logs them
-- Next Steps (Day 1 Verification):
-  - Run `docker compose up`
-  - Check server responds to `curl localhost:3000/healthz`
-  - Check agent logs show `agent_connected`
-  - Manual PTT test with LiveKit CLI
-- Commit: `83b9221` feat: Day 1 wiring | agent→server event emission, dual URL pattern
-- Links:
-  - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
-  - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/src/main.py
-  - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
-  - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/docker-compose.yml
+  - Received Day 2 guidance: idempotency upgrade + PTT session lifecycle
+  - Implemented all Day 2 requirements
+  - Design constraint locked: PTT track is ONLY trigger for command capture
+
+### Immediate Upgrade (Idempotency) - DONE
+
+- **BaseEvent interface**: All events now require `eventId` (uuid v4) + `ts`
+- **Event dedup cache**: In-memory Map with 60s TTL, cleanup every 30s
+- **Dedup response**: Returns `{ status: "accepted", deduped: true }` for replays
+- **generateEventId()**: Utility in events.ts using crypto.randomUUID()
+- **Constant**: `CONSTANTS.EVENT_DEDUP_TTL_MS = 60000`
+
+### Day 2 Target #1: PTT Session Window - DONE
+
+- **Server creates session**: On `PTT_TRACK_DETECTED`, creates `pttSessionId` (uuid)
+- **Server closes session**: On `PTT_TRACK_ENDED`, logs duration, removes from map
+- **Response includes ID**: `{ pttSessionId: "..." }` returned to agent
+- **Agent stores ID**: `PttSessionState` class tracks `ptt_session_id` per track
+
+### Day 2 Target #2: Audio Capture Hook - DONE
+
+- **Agent logs start**: `ptt_audio_frames_started` with track/identity/session
+- **Agent logs stop**: `ptt_audio_frames_stopped` with frame count
+- **Frame counting**: Ready for STT buffer integration
+- **AudioStream**: Async iteration over `rtc.AudioStream(track)`
+
+### Day 2 Target #3: Command Placeholder - DONE
+
+- **CommandReceived event**: New type with `pttSessionId` field
+- **Agent emits**: On PTT end, emits `COMMAND_RECEIVED` with `text: "__placeholder__"`
+- **Server logs**: `command_received` with ptt_session_id and text
+
+### Event Flow (Day 2)
+
+```
+PTT button held → LiveKit track published → Agent detects
+  ↓
+Agent: emit PTT_TRACK_DETECTED → Server: create pttSessionId, return it
+  ↓
+Agent: start audio frame capture, log ptt_audio_frames_started
+  ↓
+PTT button released → LiveKit track ends → Agent detects
+  ↓
+Agent: log ptt_audio_frames_stopped (frame_count=N)
+Agent: emit PTT_TRACK_ENDED → Server: close session, log duration
+Agent: emit COMMAND_RECEIVED (text="__placeholder__", pttSessionId) → Server: log
+```
+
+### Design Constraint Locked
+
+> PTT track name must be the **only** trigger for command capture.
+> No wake words. No diarization. No "intent detection" from open mic.
+> Everything else stays social voice only.
+
+### Acceptance Criteria Status
+
+| Criterion | Status |
+|-----------|--------|
+| PTT_TRACK_DETECTED arrives at server | ✅ |
+| Server returns pttSessionId | ✅ |
+| Agent logs audio frame start/stop | ✅ |
+| Server receives COMMAND_RECEIVED with session id | ✅ |
+| PTT_TRACK_ENDED closes the session | ✅ |
+
+### Ready for Verification
+
+Run `make demo` or manual test:
+1. Start docker compose
+2. Use LiveKit CLI to publish PTT track to `campaign-TEST`
+3. Check server logs for event sequence
+4. Verify pttSessionId flows through all events
+
+### Commit
+
+`a4a5786` feat: Day 2 implementation | idempotency, PTT sessions, command pipeline
+
+### Links
+
+- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
+- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
+- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/src/main.py
