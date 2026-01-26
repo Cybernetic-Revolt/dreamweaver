@@ -16,6 +16,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Database } from 'bun:sqlite';
 import { createClient, type RedisClientType } from 'redis';
+import { AccessToken } from 'livekit-server-sdk';
 import {
   CONSTANTS,
   generateEventId,
@@ -619,9 +620,55 @@ app.post('/api/sessions/:code/join', async (c) => {
 // Auth Routes
 // ============================================================================
 
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'secret_min_32_characters_long_here';
+const LIVEKIT_WS_URL_EXTERNAL = process.env.LIVEKIT_WS_URL_EXTERNAL || 'ws://localhost:7880';
+
 app.post('/auth/token', async (c) => {
-  // TODO: Implement LiveKit token generation
-  return c.json({ error: 'NOT_IMPLEMENTED' }, 501);
+  try {
+    const body = await c.req.json<{ identity: string; room: string }>();
+
+    if (!body.identity || !body.room) {
+      return c.json({ error: 'INVALID_REQUEST', message: 'Missing identity or room' }, 400);
+    }
+
+    const { identity, room } = body;
+
+    // Create access token
+    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity,
+      name: identity,
+      ttl: CONSTANTS.TOKEN_TTL_SECONDS,
+    });
+
+    // Grant room access
+    token.addGrant({
+      room,
+      roomJoin: true,
+      canPublish: true,
+      canSubscribe: true,
+      canPublishData: true,
+    });
+
+    const jwt = await token.toJwt();
+
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'token_generated',
+      identity,
+      room,
+    }));
+
+    return c.json({
+      token: jwt,
+      wsUrl: LIVEKIT_WS_URL_EXTERNAL,
+      identity,
+      room,
+    });
+  } catch (err) {
+    console.error('token_generation_error', err);
+    return c.json({ error: 'TOKEN_ERROR', message: 'Failed to generate token' }, 500);
+  }
 });
 
 // ============================================================================
