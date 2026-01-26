@@ -1,0 +1,603 @@
+openapi: 3.1.0
+info:
+  title: Dreamweaver API
+  description: |
+    Voice-first multiplayer AI RPG backend API.
+
+    ## Overview
+    This API provides endpoints for session management and game operations.
+    Real-time communication (voice, state sync) uses WebSocket, not REST.
+
+    ## Authentication
+    MVP uses simple player ID tokens passed in headers.
+    No registration required - IDs are generated client-side.
+
+    ## WebSocket
+    Connect to `/ws` for real-time game state and signaling.
+    See WebSocket Messages section for protocol details.
+  version: 1.0.0
+  contact:
+    name: Dreamweaver
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://dreamweaver.yourdomain.com
+    description: Production
+
+tags:
+  - name: Health
+    description: Service health checks
+  - name: Sessions
+    description: Game session management
+  - name: Adventures
+    description: Adventure content
+  - name: WebSocket
+    description: Real-time communication
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns service health status
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service unhealthy
+
+  /api/sessions:
+    post:
+      tags: [Sessions]
+      summary: Create new session
+      description: Creates a new game session and returns room code
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateSessionResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/sessions/{roomCode}:
+    get:
+      tags: [Sessions]
+      summary: Get session info
+      description: Returns session status and player list
+      operationId: getSession
+      parameters:
+        - name: roomCode
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z0-9]{6}$'
+            example: 'WYR42K'
+      responses:
+        '200':
+          description: Session found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '404':
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/sessions/{roomCode}/join:
+    post:
+      tags: [Sessions]
+      summary: Join session
+      description: Join an existing session as a player
+      operationId: joinSession
+      parameters:
+        - name: roomCode
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z0-9]{6}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JoinSessionRequest'
+      responses:
+        '200':
+          description: Joined successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinSessionResponse'
+        '400':
+          description: Invalid request
+        '404':
+          description: Session not found
+        '409':
+          description: Session full or already started
+
+  /api/adventures:
+    get:
+      tags: [Adventures]
+      summary: List adventures
+      description: Returns available adventures
+      operationId: listAdventures
+      responses:
+        '200':
+          description: Adventure list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdventureListResponse'
+
+  /api/adventures/{adventureId}:
+    get:
+      tags: [Adventures]
+      summary: Get adventure metadata
+      description: Returns adventure info (not full content)
+      operationId: getAdventure
+      parameters:
+        - name: adventureId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: 'goblin_cave'
+      responses:
+        '200':
+          description: Adventure found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdventureResponse'
+        '404':
+          description: Adventure not found
+
+  /ws:
+    get:
+      tags: [WebSocket]
+      summary: WebSocket connection
+      description: |
+        Upgrade to WebSocket for real-time communication.
+
+        ## Connection
+        ```
+        ws://localhost:3000/ws?playerId={playerId}
+        ```
+
+        ## Client → Server Messages
+
+        ### JOIN
+        ```json
+        {
+          "type": "JOIN",
+          "roomCode": "WYR42K",
+          "playerName": "Theron"
+        }
+        ```
+
+        ### ACTION
+        ```json
+        {
+          "type": "ACTION",
+          "text": "I search the room",
+          "timestamp": 1706234567890
+        }
+        ```
+
+        ### COMMAND
+        ```json
+        {
+          "type": "COMMAND",
+          "command": "pause" | "resume" | "recap"
+        }
+        ```
+
+        ### VOICE_START
+        ```json
+        {
+          "type": "VOICE_START"
+        }
+        ```
+
+        ### VOICE_END
+        ```json
+        {
+          "type": "VOICE_END"
+        }
+        ```
+
+        ## Server → Client Messages
+
+        ### SESSION_STATE
+        ```json
+        {
+          "type": "SESSION_STATE",
+          "session": { ... },
+          "players": [ ... ],
+          "gameState": { ... }
+        }
+        ```
+
+        ### STATE_DELTA
+        ```json
+        {
+          "type": "STATE_DELTA",
+          "changes": [ ... ]
+        }
+        ```
+
+        ### NARRATION
+        ```json
+        {
+          "type": "NARRATION",
+          "text": "You enter the cave...",
+          "audioUrl": "/audio/narration-123.opus"
+        }
+        ```
+
+        ### PLAYER_JOINED
+        ```json
+        {
+          "type": "PLAYER_JOINED",
+          "player": {
+            "id": "abc123",
+            "name": "Marcus"
+          }
+        }
+        ```
+
+        ### PLAYER_LEFT
+        ```json
+        {
+          "type": "PLAYER_LEFT",
+          "playerId": "abc123",
+          "reason": "disconnected" | "kicked" | "timeout"
+        }
+        ```
+
+        ### PLAYER_SPEAKING
+        ```json
+        {
+          "type": "PLAYER_SPEAKING",
+          "playerId": "abc123",
+          "speaking": true
+        }
+        ```
+
+        ### ERROR
+        ```json
+        {
+          "type": "ERROR",
+          "code": "INVALID_ACTION",
+          "message": "You cannot do that"
+        }
+        ```
+
+        ## WebRTC Signaling
+
+        ### WEBRTC_OFFER
+        ```json
+        {
+          "type": "WEBRTC_OFFER",
+          "sdp": "..."
+        }
+        ```
+
+        ### WEBRTC_ANSWER
+        ```json
+        {
+          "type": "WEBRTC_ANSWER",
+          "sdp": "..."
+        }
+        ```
+
+        ### WEBRTC_ICE
+        ```json
+        {
+          "type": "WEBRTC_ICE",
+          "candidate": "..."
+        }
+        ```
+      responses:
+        '101':
+          description: Switching Protocols
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          example: healthy
+        timestamp:
+          type: integer
+          description: Unix timestamp
+          example: 1706234567
+        services:
+          type: object
+          properties:
+            redis:
+              type: string
+              enum: [up, down]
+            ollama:
+              type: string
+              enum: [up, down]
+            whisper:
+              type: string
+              enum: [up, down]
+            piper:
+              type: string
+              enum: [up, down]
+
+    CreateSessionRequest:
+      type: object
+      required:
+        - playerId
+        - playerName
+        - adventureId
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          description: Client-generated player ID
+          example: '550e8400-e29b-41d4-a716-446655440000'
+        playerName:
+          type: string
+          minLength: 1
+          maxLength: 32
+          example: 'Theron'
+        adventureId:
+          type: string
+          example: 'goblin_cave'
+
+    CreateSessionResponse:
+      type: object
+      required:
+        - roomCode
+        - sessionId
+      properties:
+        roomCode:
+          type: string
+          pattern: '^[A-Z0-9]{6}$'
+          example: 'WYR42K'
+        sessionId:
+          type: string
+          format: uuid
+        wsUrl:
+          type: string
+          format: uri
+          example: 'wss://dreamweaver.yourdomain.com/ws'
+
+    JoinSessionRequest:
+      type: object
+      required:
+        - playerId
+        - playerName
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        playerName:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    JoinSessionResponse:
+      type: object
+      required:
+        - sessionId
+        - players
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/Player'
+        wsUrl:
+          type: string
+          format: uri
+
+    SessionResponse:
+      type: object
+      required:
+        - roomCode
+        - status
+        - playerCount
+      properties:
+        roomCode:
+          type: string
+          example: 'WYR42K'
+        status:
+          type: string
+          enum: [lobby, playing, paused, ended]
+        playerCount:
+          type: integer
+          minimum: 0
+          maximum: 5
+        maxPlayers:
+          type: integer
+          example: 5
+        adventure:
+          $ref: '#/components/schemas/AdventureSummary'
+        createdAt:
+          type: integer
+          description: Unix timestamp
+
+    Player:
+      type: object
+      required:
+        - id
+        - name
+        - isHost
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: 'Theron'
+        isHost:
+          type: boolean
+        status:
+          type: string
+          enum: [connected, disconnected, reconnecting]
+        character:
+          $ref: '#/components/schemas/Character'
+
+    Character:
+      type: object
+      required:
+        - name
+        - archetype
+      properties:
+        name:
+          type: string
+          example: 'Theron'
+        archetype:
+          type: string
+          enum: [fighter, mage, rogue]
+        trait:
+          type: string
+          example: 'A scar across my left eye'
+        health:
+          type: string
+          enum: [healthy, wounded, critical]
+          default: healthy
+        inventory:
+          type: array
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/Item'
+
+    Item:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          example: 'Rusty Sword'
+        properties:
+          type: array
+          items:
+            type: string
+            enum: [weapon, magical, consumable, key, valuable]
+
+    AdventureListResponse:
+      type: object
+      required:
+        - adventures
+      properties:
+        adventures:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdventureSummary'
+
+    AdventureSummary:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+          example: 'goblin_cave'
+        title:
+          type: string
+          example: "The Goblin's Bargain"
+        estimatedDuration:
+          type: integer
+          description: Minutes
+          example: 30
+        difficulty:
+          type: string
+          enum: [beginner, intermediate, advanced]
+
+    AdventureResponse:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        estimatedDuration:
+          type: integer
+        difficulty:
+          type: string
+        playerCountMin:
+          type: integer
+          default: 2
+        playerCountMax:
+          type: integer
+          default: 5
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          example: 'NOT_FOUND'
+        message:
+          type: string
+          example: 'Session not found'
+        details:
+          type: object
+
+  securitySchemes:
+    PlayerToken:
+      type: apiKey
+      in: header
+      name: X-Player-ID
+      description: Client-generated player UUID
+
+security:
+  - PlayerToken: []
