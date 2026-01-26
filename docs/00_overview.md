@@ -5,7 +5,7 @@
 
 ## Last Updated
 - **Date:** 2026-01-26
-- **Status:** Implementation-ready (20 decisions, all gaps closed)
+- **Status:** Implementation spine complete, ready for Day 1
 - **LLM Index:** [llms.txt](https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt)
 
 ---
@@ -267,6 +267,7 @@ dreamweaver/
 
 | Date | Change |
 |------|--------|
+| 2026-01-26 | Implementation spine: repo skeleton, events.ts, gm_policy.ts, docker |
 | 2026-01-26 | Implementation gaps: command capture, ducking, reconnect, GM policy |
 | 2026-01-26 | ChatGPT review: LiveKit, hybrid voice, driving UX hardening |
 | 2026-01-26 | Added LLM collaboration protocol (llms.txt, messages/) |

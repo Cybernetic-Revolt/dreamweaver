@@ -1,6 +1,6 @@
 # Dreamweaver - LLM Index (Curated)
 # Voice-first, multiplayer, AI-driven RPG for driving-safe gameplay
-# Last updated: 2026-01-26 (implementation gaps closed)
+# Last updated: 2026-01-26 (implementation spine complete)
 
 ## Primary Documents (read these first)
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md
@@ -19,6 +19,13 @@ https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/02_mvp
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/05_game-engine.md
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/07_stack.md
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/08_security-data.md
+
+## Implementation Code
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/gm_policy.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/docker-compose.yml
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/src/main.py
 
 ## Message Bus
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-chatgpt.md

@@ -37,38 +37,92 @@ This sprint delivers a playable Dreamweaver MVP: a voice-first, multiplayer AI R
 
 ---
 
-## Day 1: Project Setup + LiveKit Voice POC
+## Day 1: LiveKit + PTT Track Detection (TIGHT)
+
+### Day 1 Success Criteria
+
+**If Day 1 ends without "agent can see PTT tracks," you're behind.**
 
 ### Deliverables
-- [ ] Repository structure created
-- [ ] Bun + Hono server scaffolded
-- [ ] React Native + Expo app scaffolded
-- [ ] LiveKit Cloud account created (free tier)
-- [ ] LiveKit voice connection between 2 clients
-- [ ] Basic health endpoint
+- [ ] LiveKit running via docker-compose
+- [ ] `/auth/token` endpoint returns valid JWT
+- [ ] Mobile app joins LiveKit room
+- [ ] Mobile publishes `mic` track (open-mic)
+- [ ] Mobile publishes `ptt` track when button held
+- [ ] Agent joins room and logs PTT track subscription
 
-### Tasks
+### Task List (Tight)
 
-```bash
-# Morning: Server setup
-mkdir -p server/{src/{routes,ws,game,ai,voice,data,utils},adventures}
-cd server && bun init && bun add hono redis zod yaml nanoid livekit-server-sdk
-
-# Afternoon: Mobile setup
-npx create-expo-app app --template tabs
-cd app && npx expo install expo-av @livekit/react-native @livekit/react-native-webrtc
-
-# Evening: LiveKit POC
-# - Create LiveKit Cloud project (livekit.cloud)
-# - Server generates access tokens
-# - Two phones join same LiveKit room
-# - Audio flows between clients
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DAY 1 TASK LIST                                      │
+│                                                                         │
+│  Morning (4 hours)                                                      │
+│  ─────────────────                                                      │
+│  □ 1. Stand up LiveKit via docker-compose                              │
+│       cd infra && cp .env.example .env                                 │
+│       # Generate keys: docker run --rm livekit/livekit-server generate-keys
+│       # Add keys to .env                                               │
+│       make up                                                          │
+│       curl http://localhost:7880/health                                │
+│                                                                         │
+│  □ 2. Implement /auth/token endpoint                                   │
+│       cd apps/server && bun install                                    │
+│       # Use livekit-server-sdk to generate JWT                         │
+│       # Input: roomCode, identity, name                                │
+│       # Output: { token: "..." }                                       │
+│                                                                         │
+│  Afternoon (4 hours)                                                    │
+│  ──────────────────                                                     │
+│  □ 3. Initialize mobile app                                            │
+│       cd apps/mobile                                                   │
+│       npx create-expo-app . --template blank-typescript               │
+│       npx expo install @livekit/react-native @livekit/react-native-webrtc
+│                                                                         │
+│  □ 4. Mobile joins room with JWT                                       │
+│       # Fetch token from /auth/token                                   │
+│       # Connect to LiveKit room                                        │
+│       # Verify connection in LiveKit logs                              │
+│                                                                         │
+│  □ 5. Mobile publishes mic track                                       │
+│       # Enable microphone permission                                   │
+│       # Publish audio track named "mic"                                │
+│       # Verify in second device or LiveKit dashboard                   │
+│                                                                         │
+│  Evening (2 hours)                                                      │
+│  ─────────────────                                                      │
+│  □ 6. Add PTT button that publishes ptt track                         │
+│       # Button component with onPressIn/onPressOut                     │
+│       # onPressIn: publish track named "ptt-{identity}"               │
+│       # onPressOut: unpublish track                                    │
+│                                                                         │
+│  □ 7. Agent joins room and logs PTT tracks                             │
+│       cd apps/agent && pip install -r requirements.txt                 │
+│       # Run agent: python -m src.main                                  │
+│       # Verify log: "ptt_track_detected"                               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Hour-by-Hour Schedule
+
+| Time | Task | Output |
+|------|------|--------|
+| 09:00-10:00 | LiveKit docker-compose up | `curl localhost:7880/health` OK |
+| 10:00-12:00 | Implement /auth/token | Token returned, verified in jwt.io |
+| 12:00-13:00 | Break | - |
+| 13:00-14:30 | Init Expo app + LiveKit SDK | App compiles |
+| 14:30-16:00 | Mobile joins room + mic track | Two devices can talk |
+| 16:00-17:30 | PTT button + ptt track | Track published on press |
+| 17:30-18:30 | Agent logs PTT tracks | "ptt_track_detected" in logs |
+
 ### Acceptance Check
-- [ ] `curl http://localhost:3000/health` returns 200
-- [ ] Expo app launches in simulator
-- [ ] Two phones can hear each other via LiveKit room
+- [ ] `curl http://localhost:7880/health` returns OK
+- [ ] `curl -X POST http://localhost:3000/auth/token -d '{"roomCode":"TEST","identity":"test"}' | jq .token` returns JWT
+- [ ] Expo app runs on device
+- [ ] Two devices can hear each other (open-mic)
+- [ ] PTT button publishes/unpublishes track
+- [ ] Agent logs: `ptt_track_detected participant=...`
 
 ---
 

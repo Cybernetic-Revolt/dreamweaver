@@ -1,6 +1,6 @@
 # Dreamweaver - Full File Manifest
-# All spec/docs/plans/api files
-# Last updated: 2026-01-26 (implementation gaps closed)
+# All spec/docs/plans/api/code files
+# Last updated: 2026-01-26 (implementation spine complete)
 
 ## Documentation
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md
@@ -27,6 +27,23 @@ https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/api/openapi
 ## Message Bus
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-chatgpt.md
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-claude.md
+
+## Implementation Code
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/gm_policy.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/index.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/package.json
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/Dockerfile
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/src/main.py
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/requirements.txt
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/Dockerfile
+
+## Infrastructure
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/docker-compose.yml
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/livekit.yaml
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/Makefile
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/infra/.env.example
 
 ## Index Files
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt

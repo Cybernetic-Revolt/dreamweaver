@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # LiveKit SFU Server
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"   # HTTP API
+      - "7881:7881"   # RTC (WebRTC)
+      - "7882:7882"   # TURN/UDP
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}
+    restart: unless-stopped
+
+  # Redis for session cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  # Game Server
+  server:
+    build:
+      context: ../apps/server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - DATABASE_PATH=/data/dreamweaver.db
+    volumes:
+      - server_data:/data
+    depends_on:
+      - redis
+      - livekit
+    restart: unless-stopped
+
+  # AI Agent (GM + STT + TTS)
+  agent:
+    build:
+      context: ../apps/agent
+      dockerfile: Dockerfile
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - OLLAMA_URL=http://ollama:11434
+      - WHISPER_MODEL=small.en
+    depends_on:
+      - livekit
+      - ollama
+    restart: unless-stopped
+
+  # Ollama LLM
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU support (uncomment if available)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  server_data:
+  ollama_data:
+
+networks:
+  default:
+    name: dreamweaver
