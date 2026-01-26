@@ -228,12 +228,24 @@ function generateGMResponse(command: string, identity: string): GMResponse {
  * Returns commandId for tracking; narration is published async via Redis.
  */
 async function processCommandAsync(event: CommandTranscribed): Promise<string> {
-  const { text, identity, sessionId, pttSessionId } = event;
+  const { text, identity, sessionId, pttSessionId, roomName } = event;
   const commandId = generateEventId();
   const traceId = pttSessionId || commandId;
 
-  // Skip placeholder/empty commands
-  if (!text || text.startsWith('__') && !text.includes('timeout') || text.length < 2) {
+  // Validate roomName is present (required for Redis routing)
+  if (!roomName) {
+    console.log(JSON.stringify({
+      level: 'error',
+      msg: 'missing_room_name',
+      ptt_session_id: pttSessionId,
+      trace_id: traceId,
+    }));
+    return commandId;
+  }
+
+  // Skip placeholder/empty commands (fix: explicit boolean to avoid precedence issues)
+  const isPlaceholder = text.startsWith('__') && !text.includes('timeout');
+  if (!text || isPlaceholder || text.length < 2) {
     console.log(JSON.stringify({
       level: 'info',
       msg: 'skipping_placeholder_command',
@@ -285,8 +297,7 @@ async function processCommandAsync(event: CommandTranscribed): Promise<string> {
     trace_id: traceId,
   }));
 
-  // Publish to Redis asynchronously
-  const roomName = getRoomForSession(pttSessionId) || sessionId;
+  // Publish to Redis asynchronously (roomName validated above)
   publishNarration(roomName, narration).catch((err) => {
     console.error('Failed to publish narration:', err);
   });

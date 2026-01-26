@@ -53,6 +53,7 @@ export interface CommandTranscribed extends BaseEvent {
   type: 'COMMAND_TRANSCRIBED';
   sessionId: string;
   pttSessionId: string;
+  roomName: string;       // Room for Redis routing (required for pub/sub)
   identity: string;
   text: string;           // STT output
   confidence?: number;    // 0-1 if available

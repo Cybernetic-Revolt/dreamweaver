@@ -607,11 +607,22 @@ class DreamweaverAgent:
             if transcription:
                 text, latency_ms = transcription
 
+                # Require pttSessionId for proper correlation
+                ptt_session_id = session.ptt_session_id
+                if not ptt_session_id:
+                    logger.warning(
+                        "missing_ptt_session_id_skipping_transcription",
+                        track_sid=track.sid,
+                        trace_id=trace_id,
+                    )
+                    return
+
                 # Emit COMMAND_TRANSCRIBED (server returns 202, narration via Redis)
                 await self.emit_event({
                     "type": "COMMAND_TRANSCRIBED",
                     "sessionId": self.room_name,
-                    "pttSessionId": session.ptt_session_id or "",
+                    "pttSessionId": ptt_session_id,
+                    "roomName": self.room_name,  # Required for Redis routing
                     "identity": participant.identity,
                     "text": text,
                     "latencyMs": int(latency_ms),
