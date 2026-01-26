@@ -34,7 +34,10 @@ services:
       - "3000:3000"
     environment:
       - REDIS_URL=redis://redis:6379
-      - LIVEKIT_URL=ws://livekit:7880
+      # Internal URL for container-to-container communication
+      - LIVEKIT_WS_URL_INTERNAL=ws://livekit:7880
+      # External URL exposed in tokens for mobile clients
+      - LIVEKIT_WS_URL_EXTERNAL=${LIVEKIT_WS_URL_EXTERNAL:-ws://localhost:7880}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - DATABASE_PATH=/data/dreamweaver.db
@@ -51,14 +54,18 @@ services:
       context: ../apps/agent
       dockerfile: Dockerfile
     environment:
+      # Internal URL for agent connecting to LiveKit
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      # Server URL for event emission (internal docker network)
+      - SERVER_URL=http://server:3000
       - OLLAMA_URL=http://ollama:11434
       - WHISPER_MODEL=small.en
     depends_on:
       - livekit
       - ollama
+      - server
     restart: unless-stopped
 
   # Ollama LLM

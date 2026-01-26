@@ -156,6 +156,27 @@ export interface PttEnd {
 }
 
 // ============================================================================
+// Agent Detection Events (internal)
+// ============================================================================
+
+export interface PttTrackDetected {
+  type: 'PTT_TRACK_DETECTED';
+  roomName: string;
+  identity: string;       // participant who published
+  trackSid: string;       // LiveKit track SID
+  trackName: string;      // should be "ptt"
+  ts: number;
+}
+
+export interface PttTrackEnded {
+  type: 'PTT_TRACK_ENDED';
+  roomName: string;
+  identity: string;
+  trackSid: string;
+  ts: number;
+}
+
+// ============================================================================
 // Error Events
 // ============================================================================
 
@@ -177,6 +198,7 @@ export type StateEvent = StatePatch | StateAck | StateSync;
 export type SessionEvent = SessionCreated | PlayerJoined | PlayerLeft |
                            PlayerReconnected | SessionPaused | SessionResumed | SessionEnded;
 export type AudioEvent = PttStart | PttEnd;
+export type AgentEvent = PttTrackDetected | PttTrackEnded;
 
 export type DreamweaverEvent =
   | CommandEvent
@@ -184,6 +206,7 @@ export type DreamweaverEvent =
   | StateEvent
   | SessionEvent
   | AudioEvent
+  | AgentEvent
   | ErrorEvent;
 
 // ============================================================================
@@ -226,6 +249,27 @@ export interface SessionState {
   worldFlags: Record<string, unknown>;
   turnCount: number;
   version: number;
+}
+
+// ============================================================================
+// Track Naming (Decision-Locked)
+// ============================================================================
+
+export const TRACK_NAMES = {
+  // Canonical track names - NEVER use ad-hoc strings
+  MIC: 'mic',           // Open-mic audio track
+  PTT: 'ptt',           // Push-to-talk command track
+  AI_NARRATION: 'ai_narration',  // GM narration track
+} as const;
+
+export const ROOM_PREFIX = 'campaign-';  // Room names: campaign-{code}
+
+export function isValidRoomName(name: string): boolean {
+  return name.startsWith(ROOM_PREFIX) && name.length > ROOM_PREFIX.length;
+}
+
+export function makeRoomName(code: string): string {
+  return `${ROOM_PREFIX}${code}`;
 }
 
 // ============================================================================
