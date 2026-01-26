@@ -596,6 +596,107 @@ Client applies ducking: if (localPTTActive) gmTrack.volume = 0.2
 
 ---
 
+## D018: Dedicated PTT Track for Command Capture
+
+**Date:** Planning Phase (Added after ChatGPT review #2)
+**Status:** Accepted
+
+### Context
+
+Need to ensure command capture is deterministic even when multiple players are talking.
+
+### Decision
+
+**Command capture uses dedicated PTT track; only PTT track is transcribed**
+
+### Rationale
+
+1. Open-mic audio is never fed to STT (reduces noise, compute)
+2. PTT creates separate audio stream/track in LiveKit
+3. Server subscribes only to PTT tracks for transcription
+4. Eliminates crosstalk in command recognition
+5. Attribution is trivial: whoever published the PTT track
+
+### Implementation
+
+```
+Client PTT pressed → Publish "ptt-{identity}" track → Server subscribes
+Server receives → STT → COMMAND_RECEIVED(identity, text, ts)
+```
+
+### Consequences
+
+- Two track types per participant (mic + ptt)
+- Clear separation of chat vs command audio
+- Zero ambiguity in attribution
+
+---
+
+## D019: MVP Attribution Scope
+
+**Date:** Planning Phase (Added after ChatGPT review #2)
+**Status:** Accepted
+
+### Context
+
+Speaker attribution accuracy requirements differ between chat and commands.
+
+### Decision
+
+**MVP attribution scope: commands only; diarization deferred**
+
+### Rationale
+
+1. Commands need 100% attribution (game logic depends on it)
+2. PTT gives 100% attribution with zero ML
+3. Open-mic chat doesn't need "who said what" for MVP
+4. Diarization is 70-85% accurate, not good enough for commands
+5. Post-MVP can add diarization for transcript/replay features
+
+### Consequences
+
+- No speaker labels on open-mic chat
+- Simpler implementation
+- Post-MVP work for chat attribution
+
+---
+
+## D020: Reconnect Contract
+
+**Date:** Planning Phase (Added after ChatGPT review #2)
+**Status:** Accepted
+
+### Context
+
+Need clear semantics for player disconnect/reconnect.
+
+### Decision
+
+**Resume within 10 minutes; same identity reclaims state**
+
+### Time Windows
+
+| Window | Behavior |
+|--------|----------|
+| 0-60s | Player reclaims slot silently |
+| 60s-10min | Player reclaims slot, GM announces return |
+| 10min+ | Session may have ended; rejoin as new |
+
+### Rationale
+
+1. 60s covers brief network blips
+2. 10min covers longer interruptions (gas station, etc.)
+3. Beyond 10min, session context may be stale
+4. Same identity (player_id) required for state reclaim
+
+### Consequences
+
+- Server holds player slots for 60 seconds
+- Session state persists in SQLite for 10 minutes
+- No host migration complexity
+
+---
+
 ## Decision Index
 
 | ID | Decision | Date | Status |
@@ -610,13 +711,16 @@ Client applies ducking: if (localPTTActive) gmTrack.volume = 0.2
 | D008 | Redis + SQLite | Planning | Accepted |
 | D009 | YAML Adventure Format | Planning | Accepted |
 | D010 | SFU Voice Topology | Planning | Accepted |
-| D015 | LiveKit for SFU | Planning | Accepted |
-| D016 | Hybrid Voice Model | Planning | Accepted |
-| D017 | AI Narration Track | Planning | Accepted |
 | D011 | Minimal Character System | Planning | Accepted |
 | D012 | Single-Session Adventures | Planning | Accepted |
 | D013 | Bun Runtime | Planning | Accepted |
 | D014 | Technical Driving Safety | Planning | Accepted |
+| D015 | LiveKit for SFU | Planning | Accepted |
+| D016 | Hybrid Voice Model | Planning | Accepted |
+| D017 | AI Narration Track | Planning | Accepted |
+| D018 | Dedicated PTT Track | Planning | Accepted |
+| D019 | MVP Attribution Scope | Planning | Accepted |
+| D020 | Reconnect Contract | Planning | Accepted |
 
 ---
 

@@ -163,13 +163,44 @@ cd app && npx expo install expo-av @livekit/react-native @livekit/react-native-w
    └─> All clients sync state via WebSocket
 ```
 
-### Acceptance Check
-- [ ] 3 players in voice chat simultaneously via LiveKit
-- [ ] Server-injected audio heard by all clients
-- [ ] PTT button captures and sends audio to server
-- [ ] State machine transitions work (lobby → playing)
-- [ ] Player disconnect detected within 5 seconds
-- [ ] All clients show same session state
+### Acceptance Check (ALL MUST PASS)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DAY 3 "DONE" DEFINITION                              │
+│                                                                         │
+│  If ANY of these fail, Day 3 is NOT complete. Do not proceed.          │
+│                                                                         │
+│  □ 2+ phones join LiveKit room (can talk freely, open mic)             │
+│  □ Server joins as hidden participant                                   │
+│  □ Server publishes test narration track ("Hello adventurers")          │
+│  □ All clients hear the server-injected audio                          │
+│  □ PTT button on client publishes separate "ptt" track                 │
+│  □ Server receives PTT audio with identity + timestamp                 │
+│  □ PTT during narration causes narration to pause                       │
+│  □ Session state persists to SQLite                                     │
+│  □ Server restart loads state from SQLite (survives restart)           │
+│  □ Player disconnect detected within 5 seconds                          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Demo Script for Day 3
+
+```
+1. Start server, verify health endpoint
+2. Phone A creates session → gets room code
+3. Phone B joins with room code → both in LiveKit room
+4. Phone A and B can talk (open mic) → voice works
+5. Server injects "Hello adventurers" audio → both hear it
+6. Phone A holds PTT and says "I attack"
+7. Server logs: COMMAND_RECEIVED { identity: "player-A", text: "I attack" }
+8. PTT while narration playing → narration stops
+9. Kill server process
+10. Restart server
+11. Phone A reconnects → state restored from SQLite
+12. ✓ Walking skeleton complete
+```
 
 ---
 

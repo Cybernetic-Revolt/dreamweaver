@@ -326,3 +326,142 @@ Game Engine ──> AI Service (LLM) ──> Media Service (TTS) ──> Client
 | GPU | None (CPU inference) | RTX 3060+ (fast inference) |
 | Storage | 50 GB SSD | 100 GB NVMe |
 | Network | 50 Mbps up | 100 Mbps up |
+
+---
+
+## Reconnect Contract
+
+### Time Windows
+
+| Event | Window | Behavior |
+|-------|--------|----------|
+| Disconnect detected | 0s | Mark player as "disconnected", hold slot |
+| Reconnect grace period | 0-60s | Player can rejoin, reclaim state |
+| Slot release | 60s+ | Player removed, other players notified |
+| Session resume | 0-10 min | Same room code valid, full state restored |
+| Session expiry | 10+ min | Room code invalid, session archived |
+
+### Token Refresh
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    TOKEN LIFECYCLE                                      │
+│                                                                         │
+│  1. Initial join: Server issues LiveKit token (1 hour TTL)             │
+│  2. Token refresh: Client requests new token at 50 min mark            │
+│  3. Reconnect: Client presents player_id, gets new token               │
+│  4. Identity validation: player_id + session_code must match           │
+│                                                                         │
+│  Token payload:                                                         │
+│  {                                                                      │
+│    "room": "campaign-ABC123",                                          │
+│    "identity": "player_550e8400-...",                                  │
+│    "metadata": { "display_name": "Theron", "is_host": false }          │
+│  }                                                                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Session Resumption Protocol
+
+```
+Client Reconnects                Server                        SQLite
+      │                            │                              │
+      │── GET /session/{code} ────>│                              │
+      │   + player_id header       │                              │
+      │                            │── Load snapshot ────────────>│
+      │                            │<── state_json ───────────────│
+      │                            │                              │
+      │                            │── Validate player_id         │
+      │                            │   against session.players    │
+      │                            │                              │
+      │<── 200 + LiveKit token ────│                              │
+      │    + state snapshot        │                              │
+      │    + "missed_events" list  │                              │
+      │                            │                              │
+      │── Connect to LiveKit ─────>│                              │
+      │                            │                              │
+      │<── GM: "Welcome back,      │                              │
+      │        [name]"             │                              │
+```
+
+### Player Rejoin Policy
+
+| Scenario | Behavior |
+|----------|----------|
+| Same player_id, within 60s | Reclaim slot, no state change |
+| Same player_id, 60s-10min | Reclaim slot, GM announces return |
+| Same player_id, 10min+ | New join, may reclaim character if host approves |
+| Different player_id, same name | Reject (name collision) |
+| Host disconnects | Server remains authoritative, no host migration |
+
+### Server-Authoritative Guarantees
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    SERVER AUTHORITY RULES                               │
+│                                                                         │
+│  1. Server is single source of truth for game state                    │
+│  2. Client state is always a projection of server state                │
+│  3. No "host migration" — server owns session lifecycle                │
+│  4. If host drops, session continues for remaining players             │
+│  5. State snapshots written to SQLite every 30 seconds                 │
+│  6. Major state transitions (combat, location) trigger immediate save  │
+│                                                                         │
+│  Recovery after server restart:                                         │
+│  1. Load most recent snapshot from SQLite                              │
+│  2. Replay events since snapshot                                       │
+│  3. Notify reconnecting clients of current state                       │
+│  4. Resume session                                                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Persistence Schema (SQLite)
+
+```sql
+-- Sessions table
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  room_code TEXT UNIQUE NOT NULL,
+  adventure_id TEXT NOT NULL,
+  status TEXT DEFAULT 'lobby',  -- lobby, playing, paused, ended
+  created_at INTEGER DEFAULT (unixepoch()),
+  updated_at INTEGER DEFAULT (unixepoch()),
+  mode TEXT DEFAULT 'driving'  -- driving, parked
+);
+
+-- Players table
+CREATE TABLE players (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  identity TEXT NOT NULL,  -- player_id from client
+  display_name TEXT NOT NULL,
+  is_host INTEGER DEFAULT 0,
+  character_json TEXT,  -- serialized character state
+  joined_at INTEGER DEFAULT (unixepoch()),
+  last_seen_at INTEGER DEFAULT (unixepoch()),
+  UNIQUE(session_id, identity)
+);
+
+-- Event log (append-only)
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  player_identity TEXT,  -- null for system events
+  event_type TEXT NOT NULL,  -- command, narration, state_change
+  payload_json TEXT,
+  ts INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX idx_events_session ON events(session_id, ts);
+
+-- State snapshots (periodic)
+CREATE TABLE state_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  version INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  ts INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX idx_snapshots_session ON state_snapshots(session_id, version DESC);
+```

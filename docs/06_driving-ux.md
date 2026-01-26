@@ -327,14 +327,103 @@ interface MotionState {
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Driving Mode GM Policy
+
+### Policy Constraints (Machine-Checkable)
+
+These constraints are enforced in code. The LLM system prompt includes them, and output is validated.
+
+```typescript
+// DRIVING_MODE_POLICY - must be unit testable
+const DRIVING_POLICY = {
+  // Narration limits
+  MAX_NARRATION_SECONDS: 12,
+  MAX_NARRATION_WORDS: 60,
+
+  // Choice limits
+  MAX_CHOICES: 2,  // Plus implicit "repeat" and "pause"
+  CHOICE_FORMAT: "simple",  // "one" or "two", not A/B/C
+
+  // Forbidden content
+  FORBIDDEN_PATTERNS: [
+    /spell.*these.*words/i,
+    /choose.*from.*\d+.*options/i,
+    /remember.*the.*sequence/i,
+    /look.*at.*screen/i,
+    /tap|swipe|touch|press.*button/i,
+    /timer|countdown|hurry|quick/i,
+  ],
+
+  // Memory/recall limits
+  MAX_ITEMS_TO_REMEMBER: 0,  // No memory puzzles
+  MAX_SEQUENCE_LENGTH: 0,    // No sequences
+
+  // Confirmation behavior
+  REQUIRE_CONFIRMATION: false,  // Never "say yes to confirm"
+
+  // Fail-safe
+  ON_VIOLATION: "rephrase",  // LLM must rephrase, not send
+};
+```
+
+### GM System Prompt Additions (Driving Mode)
+
+```
+DRIVING MODE ACTIVE - STRICT CONSTRAINTS:
+
+1. NEVER ask player to remember sequences or lists
+2. NEVER offer more than 2 choices at once
+3. NEVER use numbered options (1/2/3); use "this or that"
+4. NEVER require confirmation ("say yes to confirm")
+5. NEVER mention screen, touch, or visual elements
+6. NEVER create time pressure ("hurry", "quick", "before it's too late")
+7. ALWAYS phrase choices as simple alternatives:
+   ✓ "Do you fight or flee?"
+   ✓ "Left path or right path?"
+   ✗ "Choose: 1) fight, 2) flee, 3) negotiate, 4) hide"
+8. ALWAYS assume player may be distracted; be forgiving
+9. ALWAYS offer "repeat" implicitly (player can always ask)
+10. IF uncertain about player intent, make a reasonable choice and narrate it
+    (player can undo/redirect on next turn)
+```
+
+### Validation Examples
+
+| GM Output | Valid? | Reason |
+|-----------|--------|--------|
+| "Fight or run?" | ✅ | 2 choices, simple |
+| "Pick 1, 2, or 3" | ❌ | >2 choices, numbered |
+| "Remember: red, blue, green, red" | ❌ | Memory puzzle |
+| "Quick, decide now!" | ❌ | Time pressure |
+| "The door opens. A torch-lit hall extends north." | ✅ | Description, no pressure |
+| "Say 'yes' to confirm attack" | ❌ | Confirmation required |
+| "Theron attacks! The blade strikes true." | ✅ | Action, no confirm |
+
+### Policy Enforcement Flow
+
+```
+LLM Response ──> Policy Validator ──> Pass? ──> TTS ──> Player
+                      │
+                      └──> Fail? ──> Request Rephrase ──> LLM
+                                          │
+                                          └──> 3 attempts ──> Fallback
+                                                              "The mists
+                                                               swirl..."
+```
+
+---
+
 ## Compliance Checklist
 
 Before any feature ships:
 
 - [ ] Can it be used without looking at screen?
 - [ ] Can it be used without touching device?
-- [ ] Does narration stay under 30 seconds?
+- [ ] Does narration stay under 12 seconds?
 - [ ] Are there clear verbal prompts?
 - [ ] Does it handle interrupts gracefully?
 - [ ] Is there a voice command equivalent?
+- [ ] Max 2 choices per decision point?
+- [ ] No memory/sequence puzzles?
+- [ ] No confirmation dialogs?
 - [ ] Has it been tested while driving (safely)?

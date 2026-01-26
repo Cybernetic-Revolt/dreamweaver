@@ -5,7 +5,7 @@
 
 ## Last Updated
 - **Date:** 2026-01-26
-- **Status:** ChatGPT review integrated, LiveKit decisions added
+- **Status:** Implementation-ready (20 decisions, all gaps closed)
 - **LLM Index:** [llms.txt](https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt)
 
 ---
@@ -267,6 +267,7 @@ dreamweaver/
 
 | Date | Change |
 |------|--------|
+| 2026-01-26 | Implementation gaps: command capture, ducking, reconnect, GM policy |
 | 2026-01-26 | ChatGPT review: LiveKit, hybrid voice, driving UX hardening |
 | 2026-01-26 | Added LLM collaboration protocol (llms.txt, messages/) |
 | 2026-01-26 | Initial planning session complete |
