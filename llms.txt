@@ -1,0 +1,28 @@
+# Dreamweaver - LLM Index (Curated)
+# Voice-first, multiplayer, AI-driven RPG for driving-safe gameplay
+# Last updated: 2026-01-26
+
+## Primary Documents (read these first)
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/decisions.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/03_architecture.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/04_voice-multiplayer.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/06_driving-ux.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/plans/14_day_sprint.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/api/openapi.yaml
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/acceptance-tests.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/risks.md
+
+## Supporting Documents
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/01_problem-success.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/02_mvp-scope.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/05_game-engine.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/07_stack.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/08_security-data.md
+
+## Message Bus
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-chatgpt.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-claude.md
+
+## Full Manifest
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms-full.txt

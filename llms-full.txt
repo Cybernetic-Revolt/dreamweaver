@@ -1,0 +1,33 @@
+# Dreamweaver - Full File Manifest
+# All spec/docs/plans/api files
+# Last updated: 2026-01-26
+
+## Documentation
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/01_problem-success.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/02_mvp-scope.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/03_architecture.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/04_voice-multiplayer.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/05_game-engine.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/06_driving-ux.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/07_stack.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/08_security-data.md
+
+## Specifications
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/decisions.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/risks.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/spec/acceptance-tests.md
+
+## Plans
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/plans/14_day_sprint.md
+
+## API
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/api/openapi.yaml
+
+## Message Bus
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-chatgpt.md
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/messages/to-claude.md
+
+## Index Files
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt
+https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms-full.txt

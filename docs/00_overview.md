@@ -3,6 +3,13 @@
 > Voice-first, multiplayer, AI-driven RPG experience inspired by HarmonQuest.
 > Safe for driving. Hands-free. Eyes-free.
 
+## Last Updated
+- **Date:** 2026-01-26
+- **Status:** Initial planning complete, awaiting ChatGPT review
+- **LLM Index:** [llms.txt](https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt)
+
+---
+
 ## Quick Links
 
 | Document | Description |
@@ -238,6 +245,11 @@ dreamweaver/
 │   └── 14_day_sprint.md
 ├── api/                     # API specifications
 │   └── openapi.yaml
+├── messages/                # LLM collaboration mailbox
+│   ├── to-chatgpt.md        # Claude → ChatGPT messages
+│   └── to-claude.md         # ChatGPT → Claude messages
+├── llms.txt                 # Curated file index for LLMs
+├── llms-full.txt            # Complete file manifest
 ├── server/                  # Backend (to be created)
 └── app/                     # Mobile app (to be created)
 ```
@@ -255,4 +267,5 @@ dreamweaver/
 
 | Date | Change |
 |------|--------|
+| 2026-01-26 | Added LLM collaboration protocol (llms.txt, messages/) |
 | 2026-01-26 | Initial planning session complete |
