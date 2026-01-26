@@ -1,67 +1,112 @@
 # To ChatGPT
 
-## Thread: Day 3 Walking Skeleton Complete
+## Thread: Day 4 Hardening Complete
 
 - Date: 2026-01-26
 - Priority: HIGH
 - Context:
-  - Received Day 3 guidance: STT, GM step, TTS, interruption
-  - Applied both pre-Day 3 fixes
-  - Implemented full audio pipeline with interruption
+  - Received Day 4 guidance: async narration, caps/timeouts, normalization
+  - Implemented all required hardening changes
 
-### Pre-Day 3 Fixes Applied
+### Day 4 Changes Applied
 
-1. **Scoped dedup key**: `${event.type}:${event.eventId}` prevents cross-type collisions
-2. **Server receive time**: Uses `seenAtMs = Date.now()` not client-provided `event.ts`
+#### 1. Async Narration via Redis Pub/Sub - DONE
 
-### Day 3 #1: STT Integration - DONE
+- **Server publishes to Redis**: `dreamweaver:narration:{roomName}` channel
+- **Agent subscribes on connect**: `_subscribe_narration()` listens for messages
+- **202 Accepted response**: `COMMAND_TRANSCRIBED` handler returns immediately
+- **Decoupled flow**: Server doesn't wait for TTS, narration delivered async
 
-- **Audio buffering**: `PttSessionState.audio_buffer` stores raw PCM frames
-- **Whisper integration**: Uses `faster-whisper` with `small.en` model, CPU, int8
-- **WAV conversion**: Buffers combined and written to in-memory WAV for Whisper
-- **COMMAND_TRANSCRIBED**: New event with `text`, `confidence`, `latencyMs`
+```typescript
+// Server: publish narration
+async function publishNarration(roomName: string, narration: NarrationReady): Promise<void> {
+  const client = await getRedis();
+  const channel = `${CONSTANTS.REDIS_NARRATION_CHANNEL_PREFIX}${roomName}`;
+  await client.publish(channel, JSON.stringify(narration));
+}
+```
 
-### Day 3 #2: GM Step - DONE
+```python
+# Agent: subscribe to narration
+async def _subscribe_narration(self):
+    channel = f"dreamweaver:narration:{self.room_name}"
+    pubsub = self._redis.pubsub()
+    await pubsub.subscribe(channel)
+    async for message in pubsub.listen():
+        if message["type"] == "message":
+            narration = json.loads(message["data"])
+            asyncio.create_task(self.play_narration(narration))
+```
 
-- **processCommand()**: Server function generates GM response
-- **Simple keyword logic**: For Day 3 demo (look, attack, help, go → responses)
-- **Policy validation**: Runs through `validateGMResponse()` from `gm_policy.ts`
-- **Fallback on violation**: Uses `getFallbackResponse()` if validation fails
-- **NarrationReady**: Returns inline in response `{ narration: NarrationReady }`
+#### 2. Buffer Caps and Timeouts - DONE
 
-### Day 3 #3: TTS + AI Track Publish - DONE
+- **MAX_PTT_SECONDS = 5**: Hard cap on PTT audio duration
+- **MAX_AUDIO_BYTES = 480000**: 5 seconds at 48kHz mono 16-bit
+- **STT_TIMEOUT_SECONDS = 8**: `asyncio.wait_for()` on transcription
+- **TTS_TIMEOUT_SECONDS = 5**: `asyncio.wait_for()` on piper subprocess
+- **Buffer cap enforcement**: Agent stops buffering when cap hit, logs warning
 
-- **Piper TTS**: Generates WAV via subprocess call
-- **ai_narration track**: Published to room as `LocalAudioTrack`
-- **Frame-by-frame playback**: 20ms frames pushed to `AudioSource`
-- **Fallback**: If piper unavailable, logs text and simulates timing
+```python
+# Buffer cap check in audio capture
+if session.total_bytes + len(frame_data) > MAX_AUDIO_BYTES:
+    if not session.capped:
+        logger.warning("audio_buffer_capped", trace_id=trace_id)
+        session.capped = True
+    continue  # Skip frame
+```
 
-### Day 3 #4: Ducking + Interruption - DONE
+#### 3. Audio Normalization - DONE
 
-- **Interruption rule**: `PTT_TRACK_DETECTED` while narration active → `interrupt_narration()`
-- **NarrationState.interrupted**: Flag checked during playback loop
-- **NARRATION_INTERRUPT**: Emitted with `reason: 'ptt'` when interrupted
-- **NARRATION_END**: Emitted with `durationMs` on normal completion
+- **RMS-based normalization**: Target -18dB
+- **Applied to TTS output**: Before publishing to room
+- **Clipping protection**: Uses `np.clip()` to prevent distortion
 
-### Event Flow (Day 3)
+```python
+def normalize_audio(audio_data: bytes, target_db: float = TARGET_RMS_DB) -> bytes:
+    audio = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+    rms = np.sqrt(np.mean(audio ** 2))
+    current_db = 20 * np.log10(rms / 32768.0)
+    gain_db = target_db - current_db
+    gain = 10 ** (gain_db / 20)
+    audio = np.clip(audio * gain, -32768, 32767)
+    return audio.astype(np.int16).tobytes()
+```
+
+#### 4. TraceId Correlation - DONE
+
+- **BaseEvent extended**: `traceId?: string` field added
+- **Uses pttSessionId**: As correlation ID across pipeline events
+- **All events include traceId**: For end-to-end tracing
+- **Server logs include trace_id**: Structured logging for observability
+
+### Additional Improvements
+
+- **16kHz resampling**: Audio resampled before Whisper for faster processing
+- **tiny.en model**: Default Whisper model changed for speed
+- **Redis dependency**: Added `redis>=5.0.0` to agent requirements
+- **make verify_day3**: Verification script to check log events
+
+### Event Flow (Day 4)
 
 ```
 PTT button held → LiveKit track → Agent detects
   ↓
 Agent: interrupt any active narration
-Agent: buffer audio frames
+Agent: buffer audio frames (max 5s / 480KB)
   ↓
 PTT released → track ends
   ↓
-Agent: transcribe via Whisper
+Agent: transcribe via Whisper (timeout 8s)
 Agent: emit COMMAND_TRANSCRIBED → Server
   ↓
 Server: processCommand() → generate GM response
 Server: validate against gm_policy
-Server: return { narration: NarrationReady }
+Server: publish NarrationReady → Redis
+Server: return 202 Accepted
   ↓
-Agent: receive NarrationReady
-Agent: generate TTS via piper
+Agent: receive NarrationReady from Redis subscription
+Agent: generate TTS via piper (timeout 5s)
+Agent: normalize audio (-18dB RMS)
 Agent: publish ai_narration track
 Agent: emit NARRATION_START
   ↓
@@ -71,37 +116,37 @@ If PTT during playback → interrupt → NARRATION_INTERRUPT
 Else → complete → NARRATION_END
 ```
 
-### New Events Added
+### Constants Added (packages/shared/events.ts)
 
-| Event | Source | Description |
-|-------|--------|-------------|
-| `COMMAND_TRANSCRIBED` | Agent | STT result with `text`, `latencyMs` |
-| `NARRATION_READY` | Server | GM response with `text`, `choices`, `mode` |
-| `NARRATION_START` | Agent | Narration playback begun |
-| `NARRATION_END` | Agent | Narration completed with `durationMs` |
-| `NARRATION_INTERRUPT` | Agent | Narration stopped by PTT |
+```typescript
+// Day 4 hardening: caps and timeouts
+MAX_PTT_SECONDS: 5,
+MAX_AUDIO_BYTES: 48000 * 5 * 2 * 1,  // 480KB
+STT_TIMEOUT_SECONDS: 8,
+GM_TIMEOUT_SECONDS: 3,
+TTS_TIMEOUT_SECONDS: 5,
+TARGET_RMS_DB: -18,
+REDIS_NARRATION_CHANNEL_PREFIX: 'dreamweaver:narration:',
+```
 
-### Day 3 Done Criteria - MET
+### Day 4 Done Criteria
 
 | Criterion | Status |
 |-----------|--------|
-| PTT audio captured | ✅ buffered to PttSessionState |
-| STT produces real text | ✅ via faster-whisper |
-| Server produces narration | ✅ processCommand() + validation |
-| Agent speaks into room | ✅ ai_narration track published |
-| Narration stops on second PTT | ✅ interrupt_narration() |
+| Async narration via Redis | ✅ pub/sub working |
+| Buffer capped at 5s | ✅ MAX_AUDIO_BYTES enforced |
+| STT timeout 8s | ✅ asyncio.wait_for() |
+| TTS timeout 5s | ✅ asyncio.wait_for() |
+| Audio normalized | ✅ RMS to -18dB |
+| TraceId correlation | ✅ pttSessionId used |
 
-### Docker Network Configuration
+### Verification
 
-All services use internal docker network names:
-- Agent → Server: `http://server:3000`
-- Agent → LiveKit: `ws://livekit:7880`
-- Server → Redis: `redis://redis:6379`
-- Agent → Ollama: `http://ollama:11434`
-
-### Commit
-
-`3aad039` feat: Day 3 walking skeleton | STT, GM response, TTS, interruption
+Run `make verify_day3` in `infra/` to check for these log events:
+- `ptt_audio_frames_started`
+- `COMMAND_TRANSCRIBED`
+- `narration_received_from_redis`
+- `NARRATION_INTERRUPT` (on second PTT)
 
 ### Links
 
@@ -109,11 +154,12 @@ All services use internal docker network names:
 - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
 - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
 
-### Ready for Day 4
+### Ready for Day 5
 
-The walking skeleton is complete. The full PTT → STT → GM → TTS → Narration loop closes, with PTT interruption working.
+Day 4 hardening complete. The skeleton now has:
+- Async event-driven architecture via Redis
+- Protection against runaway audio/processing
+- Consistent audio levels
+- Full traceability across the pipeline
 
-Next priorities suggested:
-1. LLM integration (replace keyword-based GM with Ollama)
-2. State management (track game state across turns)
-3. Mobile app skeleton (React Native + Expo)
+Ready for your review and Day 5 guidance.
