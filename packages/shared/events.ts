@@ -47,23 +47,48 @@ export interface CommandReceived extends BaseEvent {
   text: string;          // STT output or "__placeholder__"
 }
 
+// Command transcribed by STT (real text from audio)
+export interface CommandTranscribed extends BaseEvent {
+  type: 'COMMAND_TRANSCRIBED';
+  sessionId: string;
+  pttSessionId: string;
+  identity: string;
+  text: string;           // STT output
+  confidence?: number;    // 0-1 if available
+  latencyMs: number;      // STT processing time
+}
+
 // ============================================================================
 // Narration Events (Agent → Clients)
 // ============================================================================
 
+// GM has prepared narration, ready for TTS
+export interface NarrationReady extends BaseEvent {
+  type: 'NARRATION_READY';
+  sessionId: string;
+  pttSessionId: string;   // which command triggered this
+  text: string;           // <= 12s of speech
+  choices?: string[];     // <= 2 choices for driving mode
+  mode: 'driving' | 'stationary';
+}
+
 export interface NarrationStart extends BaseEvent {
   type: 'NARRATION_START';
   sessionId: string;
+  narrationId: string;    // correlates to audio track segment
 }
 
 export interface NarrationEnd extends BaseEvent {
   type: 'NARRATION_END';
   sessionId: string;
+  narrationId: string;
+  durationMs: number;
 }
 
 export interface NarrationInterrupt extends BaseEvent {
   type: 'NARRATION_INTERRUPT';
   sessionId: string;
+  narrationId: string;
   identity: string;  // who interrupted
   reason: 'ptt' | 'stop_command' | 'system';
 }
@@ -191,8 +216,8 @@ export interface ErrorEvent extends BaseEvent {
 // Union Types
 // ============================================================================
 
-export type CommandEvent = CommandStart | CommandText | CommandEnd | CommandReceived;
-export type NarrationEvent = NarrationStart | NarrationEnd | NarrationInterrupt;
+export type CommandEvent = CommandStart | CommandText | CommandEnd | CommandReceived | CommandTranscribed;
+export type NarrationEvent = NarrationReady | NarrationStart | NarrationEnd | NarrationInterrupt;
 export type StateEvent = StatePatch | StateAck | StateSync;
 export type SessionEvent = SessionCreated | PlayerJoined | PlayerLeft |
                            PlayerReconnected | SessionPaused | SessionResumed | SessionEnded;

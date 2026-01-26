@@ -19,7 +19,14 @@ import {
   type PttTrackDetected,
   type PttTrackEnded,
   type CommandReceived,
+  type CommandTranscribed,
+  type NarrationReady,
 } from '@dreamweaver/shared';
+import {
+  validateGMResponse,
+  getFallbackResponse,
+  type GMResponse,
+} from '@dreamweaver/shared/gm_policy';
 
 const app = new Hono();
 
@@ -28,18 +35,27 @@ const app = new Hono();
 // ============================================================================
 
 interface SeenEvent {
-  eventId: string;
-  ts: number;
+  key: string;
+  seenAtMs: number;  // Server receive time, NOT client ts
 }
 
 const seenEvents = new Map<string, SeenEvent>();
 
+/**
+ * Build scoped dedup key: type:eventId
+ * Prevents cross-type collisions if eventId ever reused
+ */
+function dedupKey(eventType: string, eventId: string): string {
+  return `${eventType}:${eventId}`;
+}
+
 function cleanupSeenEvents(): void {
   const now = Date.now();
   const ttl = CONSTANTS.EVENT_DEDUP_TTL_MS;
-  for (const [eventId, seen] of seenEvents) {
-    if (now - seen.ts > ttl) {
-      seenEvents.delete(eventId);
+  for (const [key, seen] of seenEvents) {
+    // Use server receive time for expiry, immune to client clock skew
+    if (now - seen.seenAtMs > ttl) {
+      seenEvents.delete(key);
     }
   }
 }
@@ -47,12 +63,13 @@ function cleanupSeenEvents(): void {
 // Cleanup every 30 seconds
 setInterval(cleanupSeenEvents, 30000);
 
-function isDuplicateEvent(eventId: string): boolean {
-  return seenEvents.has(eventId);
+function isDuplicateEvent(eventType: string, eventId: string): boolean {
+  return seenEvents.has(dedupKey(eventType, eventId));
 }
 
-function markEventSeen(eventId: string): void {
-  seenEvents.set(eventId, { eventId, ts: Date.now() });
+function markEventSeen(eventType: string, eventId: string): void {
+  const key = dedupKey(eventType, eventId);
+  seenEvents.set(key, { key, seenAtMs: Date.now() });
 }
 
 // ============================================================================
@@ -95,6 +112,111 @@ function closePttSession(event: PttTrackEnded): PttSession | null {
 
 function getPttSessionByTrack(trackSid: string): PttSession | undefined {
   return activePttSessions.get(trackSid);
+}
+
+// ============================================================================
+// GM Logic (minimal for Day 3)
+// ============================================================================
+
+/**
+ * Generate a GM response for a player command.
+ * For Day 3, this is a simple rule-based system.
+ * Will be replaced with LLM in Day 4+.
+ */
+function generateGMResponse(command: string, identity: string): GMResponse {
+  const lowerCommand = command.toLowerCase().trim();
+
+  // Simple keyword-based responses for Day 3 demo
+  if (lowerCommand.includes('look') || lowerCommand.includes('examine')) {
+    return {
+      narration: `${identity}, you see a dimly lit chamber. Ancient runes glow faintly on the walls. Two passages lead deeper. Do you take the left path or the right?`,
+      choices: ['left path', 'right path'],
+    };
+  }
+
+  if (lowerCommand.includes('attack') || lowerCommand.includes('fight')) {
+    return {
+      narration: `${identity} charges into battle! The enemy staggers from your blow. Do you press the attack or fall back?`,
+      choices: ['press attack', 'fall back'],
+    };
+  }
+
+  if (lowerCommand.includes('help') || lowerCommand.includes('what')) {
+    return {
+      narration: `You can explore, fight, or talk. What action do you take?`,
+      choices: ['explore', 'talk'],
+    };
+  }
+
+  if (lowerCommand.includes('go') || lowerCommand.includes('move') || lowerCommand.includes('walk')) {
+    return {
+      narration: `${identity} moves forward cautiously. The passage opens into a wider area. Do you continue or rest here?`,
+      choices: ['continue', 'rest'],
+    };
+  }
+
+  // Default response
+  return {
+    narration: `The GM considers your words. What would you like to do, ${identity}?`,
+    choices: ['explore', 'wait'],
+  };
+}
+
+/**
+ * Process a transcribed command and generate narration.
+ */
+function processCommand(event: CommandTranscribed): NarrationReady | null {
+  const { text, identity, sessionId, pttSessionId } = event;
+
+  // Skip placeholder/empty commands
+  if (!text || text.startsWith('__') || text.length < 2) {
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'skipping_placeholder_command',
+      text,
+    }));
+    return null;
+  }
+
+  // Generate GM response
+  let gmResponse = generateGMResponse(text, identity);
+
+  // Validate against driving policy
+  const validation = validateGMResponse(gmResponse);
+  if (!validation.ok) {
+    console.log(JSON.stringify({
+      level: 'warn',
+      msg: 'gm_response_validation_failed',
+      violations: validation.violations,
+    }));
+    // Use fallback
+    gmResponse = {
+      narration: getFallbackResponse(),
+      choices: ['continue', 'wait'],
+    };
+  }
+
+  // Build NarrationReady event
+  const narration: NarrationReady = {
+    type: 'NARRATION_READY',
+    eventId: generateEventId(),
+    sessionId,
+    pttSessionId,
+    text: gmResponse.narration,
+    choices: gmResponse.choices,
+    mode: 'driving',  // Always driving mode for MVP
+    ts: Date.now(),
+  };
+
+  console.log(JSON.stringify({
+    level: 'info',
+    msg: 'narration_ready',
+    ptt_session_id: pttSessionId,
+    text: narration.text.substring(0, 50),
+    choices: narration.choices,
+  }));
+
+  return narration;
 }
 
 // ============================================================================
@@ -144,8 +266,8 @@ app.post('/events', async (c) => {
       return c.json({ error: 'INVALID_EVENT', message: 'Missing eventId' }, 400);
     }
 
-    // Idempotency check
-    if (isDuplicateEvent(event.eventId)) {
+    // Idempotency check (scoped by type:eventId)
+    if (isDuplicateEvent(event.type, event.eventId)) {
       console.log(JSON.stringify({
         level: 'info',
         msg: 'event_deduped',
@@ -155,8 +277,8 @@ app.post('/events', async (c) => {
       return c.json({ status: 'accepted', deduped: true, event_type: event.type });
     }
 
-    // Mark as seen
-    markEventSeen(event.eventId);
+    // Mark as seen (uses server receive time for TTL)
+    markEventSeen(event.type, event.eventId);
 
     // Log event receipt (structured logging for observability)
     console.log(JSON.stringify({
@@ -220,6 +342,25 @@ app.post('/events', async (c) => {
           text: cmd.text,
         }));
         // TODO: Route to game engine
+        break;
+      }
+
+      case 'COMMAND_TRANSCRIBED': {
+        const cmd = event as CommandTranscribed;
+        console.log(JSON.stringify({
+          level: 'info',
+          msg: 'command_transcribed',
+          ptt_session_id: cmd.pttSessionId,
+          identity: cmd.identity,
+          text: cmd.text,
+          latency_ms: cmd.latencyMs,
+        }));
+
+        // Process command and generate narration
+        const narration = processCommand(cmd);
+        if (narration) {
+          responseData.narration = narration;
+        }
         break;
       }
 
