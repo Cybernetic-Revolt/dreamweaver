@@ -59,3 +59,26 @@ health:
 	@echo "Server:" && curl -s http://localhost:3000/health || echo "DOWN"
 	@echo "Ollama:" && curl -s http://localhost:11434/api/tags | head -1 || echo "DOWN"
 	@echo "Redis:" && docker-compose exec redis redis-cli ping || echo "DOWN"
+
+# Day 3 verification: check logs for complete pipeline events
+verify_day3:
+	@echo "=== Day 3 Walking Skeleton Verification ==="
+	@echo ""
+	@echo "Checking for PTT detection events..."
+	@docker-compose logs agent 2>&1 | grep -c "ptt_audio_frames_started" || echo "0"
+	@echo ""
+	@echo "Checking for transcription events..."
+	@docker-compose logs server 2>&1 | grep -c "COMMAND_TRANSCRIBED" || echo "0"
+	@echo ""
+	@echo "Checking for narration events..."
+	@docker-compose logs agent 2>&1 | grep -c "narration_received_from_redis" || echo "0"
+	@echo ""
+	@echo "Checking for interruption events..."
+	@docker-compose logs server 2>&1 | grep -c "NARRATION_INTERRUPT" || echo "0"
+	@echo ""
+	@echo "=== Full Pipeline Check ==="
+	@echo "Looking for complete PTT→STT→GM→TTS flow:"
+	@echo ""
+	@docker-compose logs 2>&1 | grep -E "(ptt_track_detected|ptt_audio_frames_started|transcription_complete|COMMAND_TRANSCRIBED|narration_ready|narration_received_from_redis|tts_generated)" | tail -20
+	@echo ""
+	@echo "If you see all event types above, Day 3 skeleton is working."

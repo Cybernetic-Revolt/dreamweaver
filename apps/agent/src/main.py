@@ -4,11 +4,10 @@ Dreamweaver AI Agent
 Handles:
 - Joining LiveKit rooms as GM participant
 - Subscribing to PTT tracks for STT
-- Audio frame buffering and transcription
+- Audio frame buffering with caps and timeouts
 - Publishing ai_narration audio track
-- GM response generation via LLM
-- Policy enforcement
-- Emitting events to game server
+- Redis pub/sub for async narration delivery
+- Audio normalization for consistent levels
 - PTT interruption of narration
 """
 
@@ -21,6 +20,7 @@ import wave
 import httpx
 import numpy as np
 import structlog
+import redis.asyncio as redis
 from livekit import agents, rtc
 
 logger = structlog.get_logger()
@@ -33,11 +33,49 @@ TRACK_NAME_AI_NARRATION = "ai_narration"
 # Audio constants
 SAMPLE_RATE = 48000  # LiveKit default
 CHANNELS = 1
+BYTES_PER_SAMPLE = 2  # 16-bit
+
+# Hardening caps (from CONSTANTS)
+MAX_PTT_SECONDS = 5
+MAX_AUDIO_BYTES = SAMPLE_RATE * MAX_PTT_SECONDS * BYTES_PER_SAMPLE * CHANNELS
+STT_TIMEOUT_SECONDS = 8
+TTS_TIMEOUT_SECONDS = 5
+
+# Audio normalization
+TARGET_RMS_DB = -18
 
 
 def generate_event_id() -> str:
     """Generate a UUID v4 for event IDs."""
     return str(uuid.uuid4())
+
+
+def normalize_audio(audio_data: bytes, target_db: float = TARGET_RMS_DB) -> bytes:
+    """Normalize audio to target RMS level."""
+    try:
+        # Convert to numpy
+        audio = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+
+        # Calculate current RMS
+        rms = np.sqrt(np.mean(audio ** 2))
+        if rms < 1:
+            return audio_data  # Too quiet, don't amplify noise
+
+        # Calculate current dB
+        current_db = 20 * np.log10(rms / 32768.0)
+
+        # Calculate gain needed
+        gain_db = target_db - current_db
+        gain = 10 ** (gain_db / 20)
+
+        # Apply gain with clipping protection
+        audio = audio * gain
+        audio = np.clip(audio, -32768, 32767)
+
+        return audio.astype(np.int16).tobytes()
+    except Exception as e:
+        logger.warning("audio_normalization_failed", error=str(e))
+        return audio_data
 
 
 class PttSessionState:
@@ -49,20 +87,22 @@ class PttSessionState:
         self.ptt_session_id = ptt_session_id
         self.frame_count = 0
         self.started_at = time.time()
-        self.audio_buffer: list[bytes] = []  # Raw PCM frames
+        self.audio_buffer: list[bytes] = []
+        self.total_bytes = 0
         self.sample_rate = SAMPLE_RATE
         self.channels = CHANNELS
+        self.capped = False  # True if we hit the buffer cap
 
 
 class NarrationState:
     """State for active narration playback."""
 
-    def __init__(self, narration_id: str, session_id: str):
+    def __init__(self, narration_id: str, session_id: str, trace_id: str | None = None):
         self.narration_id = narration_id
         self.session_id = session_id
+        self.trace_id = trace_id
         self.started_at = time.time()
         self.interrupted = False
-        self.task: asyncio.Task | None = None
 
 
 class DreamweaverAgent:
@@ -73,10 +113,15 @@ class DreamweaverAgent:
         self.api_key = os.getenv("LIVEKIT_API_KEY", "devkey")
         self.api_secret = os.getenv("LIVEKIT_API_SECRET", "secret")
         self.server_url = os.getenv("SERVER_URL", "http://localhost:3000")
-        self.whisper_model = os.getenv("WHISPER_MODEL", "small.en")
+        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.whisper_model = os.getenv("WHISPER_MODEL", "tiny.en")  # Use tiny for speed
         self.room_name = room_name
         self.room = room
         self._http_client = httpx.AsyncClient(timeout=30.0)
+
+        # Redis client for narration subscription
+        self._redis: redis.Redis | None = None
+        self._redis_subscription_task: asyncio.Task | None = None
 
         # Active PTT sessions: track_sid -> PttSessionState
         self._ptt_sessions: dict[str, PttSessionState] = {}
@@ -91,6 +136,44 @@ class DreamweaverAgent:
         # STT model (lazy loaded)
         self._whisper = None
 
+    async def _init_redis(self):
+        """Initialize Redis connection."""
+        if self._redis is not None:
+            return
+
+        self._redis = redis.from_url(self.redis_url)
+        logger.info("redis_connected", url=self.redis_url)
+
+    async def _subscribe_narration(self):
+        """Subscribe to Redis channel for narration delivery."""
+        await self._init_redis()
+        channel = f"dreamweaver:narration:{self.room_name}"
+
+        pubsub = self._redis.pubsub()
+        await pubsub.subscribe(channel)
+        logger.info("redis_subscribed", channel=channel)
+
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        import json
+                        narration = json.loads(message["data"])
+                        trace_id = narration.get("traceId") or narration.get("pttSessionId")
+                        logger.info(
+                            "narration_received_from_redis",
+                            trace_id=trace_id,
+                            text=narration.get("text", "")[:50],
+                        )
+                        asyncio.create_task(self.play_narration(narration))
+                    except Exception as e:
+                        logger.error("redis_message_parse_error", error=str(e))
+        except asyncio.CancelledError:
+            await pubsub.unsubscribe(channel)
+            raise
+        except Exception as e:
+            logger.error("redis_subscription_error", error=str(e))
+
     async def _init_whisper(self):
         """Initialize Whisper STT model."""
         if self._whisper is not None:
@@ -99,7 +182,6 @@ class DreamweaverAgent:
         try:
             from faster_whisper import WhisperModel
             logger.info("loading_whisper", model=self.whisper_model)
-            # Use CPU for compatibility; can switch to cuda if GPU available
             self._whisper = WhisperModel(
                 self.whisper_model,
                 device="cpu",
@@ -121,7 +203,6 @@ class DreamweaverAgent:
             TRACK_NAME_AI_NARRATION,
             self._audio_source,
         )
-        # Publish the track
         await self.room.local_participant.publish_track(
             self._audio_track,
             rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE),
@@ -138,14 +219,15 @@ class DreamweaverAgent:
                 f"{self.server_url}/events",
                 json=event,
             )
-            if response.status_code == 200:
+            # Accept both 200 and 202
+            if response.status_code in (200, 202):
                 data = response.json()
-                deduped = data.get("deduped", False)
                 logger.info(
                     "event_emitted",
                     event_type=event.get("type"),
                     event_id=event.get("eventId"),
-                    deduped=deduped,
+                    trace_id=event.get("traceId"),
+                    status=response.status_code,
                 )
                 return data
             else:
@@ -160,45 +242,55 @@ class DreamweaverAgent:
             return None
 
     async def transcribe_audio(self, session: PttSessionState) -> tuple[str, float] | None:
-        """Transcribe buffered audio using Whisper. Returns (text, latency_ms) or None."""
+        """Transcribe buffered audio using Whisper with timeout."""
+        trace_id = session.ptt_session_id or session.track_sid
+
         if not session.audio_buffer:
-            logger.warning("no_audio_to_transcribe", track_sid=session.track_sid)
+            logger.warning("no_audio_to_transcribe", trace_id=trace_id)
             return None
+
+        if session.capped:
+            logger.warning("audio_was_capped", trace_id=trace_id, bytes=session.total_bytes)
 
         await self._init_whisper()
         if self._whisper is None:
-            # Fallback: return placeholder if STT not available
-            logger.warning("stt_unavailable_using_placeholder")
+            logger.warning("stt_unavailable_using_placeholder", trace_id=trace_id)
             return ("__stt_unavailable__", 0.0)
 
         start_time = time.time()
 
         try:
-            # Combine audio frames into single buffer
+            # Combine audio frames
             audio_data = b"".join(session.audio_buffer)
 
-            # Convert to numpy array (16-bit PCM)
-            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-            audio_array /= 32768.0  # Normalize to [-1, 1]
+            # Resample to 16kHz mono for Whisper (faster)
+            audio_16k = self._resample_audio(audio_data, session.sample_rate, 16000)
 
-            # Write to WAV in memory for Whisper
+            # Write to WAV
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, "wb") as wav:
-                wav.setnchannels(session.channels)
-                wav.setsampwidth(2)  # 16-bit
-                wav.setframerate(session.sample_rate)
-                wav.writeframes(audio_data)
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(audio_16k)
             wav_buffer.seek(0)
 
-            # Transcribe
-            segments, info = self._whisper.transcribe(
-                wav_buffer,
-                language="en",
-                beam_size=1,  # Faster
-                vad_filter=True,
-            )
+            # Transcribe with timeout
+            try:
+                segments, info = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._whisper.transcribe,
+                        wav_buffer,
+                        language="en",
+                        beam_size=1,
+                        vad_filter=True,
+                    ),
+                    timeout=STT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("stt_timeout", trace_id=trace_id)
+                return ("__timeout__", STT_TIMEOUT_SECONDS * 1000)
 
-            # Collect text from segments
             text = " ".join(segment.text.strip() for segment in segments)
             latency_ms = (time.time() - start_time) * 1000
 
@@ -207,54 +299,80 @@ class DreamweaverAgent:
                 text=text[:100],
                 latency_ms=latency_ms,
                 audio_duration_s=len(audio_data) / (session.sample_rate * 2),
+                trace_id=trace_id,
             )
 
             return (text.strip() or "__silence__", latency_ms)
 
         except Exception as e:
-            logger.error("transcription_error", error=str(e))
-            return None
+            logger.error("transcription_error", error=str(e), trace_id=trace_id)
+            return ("__error__", 0.0)
 
-    async def generate_tts(self, text: str) -> bytes | None:
-        """Generate TTS audio using Piper. Returns raw PCM or None."""
+    def _resample_audio(self, audio_data: bytes, from_rate: int, to_rate: int) -> bytes:
+        """Resample audio to target rate using linear interpolation."""
+        if from_rate == to_rate:
+            return audio_data
+
         try:
-            # Try using piper-tts
+            audio = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            ratio = to_rate / from_rate
+            new_length = int(len(audio) * ratio)
+            indices = np.linspace(0, len(audio) - 1, new_length)
+            resampled = np.interp(indices, np.arange(len(audio)), audio)
+            return resampled.astype(np.int16).tobytes()
+        except Exception:
+            return audio_data
+
+    async def generate_tts(self, text: str, trace_id: str | None = None) -> bytes | None:
+        """Generate TTS audio using Piper with timeout."""
+        try:
             import subprocess
             import tempfile
 
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = f.name
 
-            # Run piper (assumes it's installed and model is available)
-            result = subprocess.run(
-                ["piper", "--model", "en_US-lessac-medium", "--output_file", temp_path],
-                input=text.encode(),
-                capture_output=True,
-                timeout=30,
-            )
-
-            if result.returncode != 0:
-                logger.warning("piper_failed", stderr=result.stderr.decode())
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        subprocess.run,
+                        ["piper", "--model", "en_US-lessac-medium", "--output_file", temp_path],
+                        input=text.encode(),
+                        capture_output=True,
+                    ),
+                    timeout=TTS_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("tts_timeout", trace_id=trace_id)
                 return None
 
-            # Read the generated audio
+            if result.returncode != 0:
+                logger.warning("piper_failed", stderr=result.stderr.decode(), trace_id=trace_id)
+                return None
+
             with wave.open(temp_path, "rb") as wav:
                 audio_data = wav.readframes(wav.getnframes())
 
             os.unlink(temp_path)
-            logger.info("tts_generated", text_len=len(text), audio_bytes=len(audio_data))
+
+            # Normalize audio levels
+            audio_data = normalize_audio(audio_data)
+
+            logger.info("tts_generated", text_len=len(text), audio_bytes=len(audio_data), trace_id=trace_id)
             return audio_data
 
         except FileNotFoundError:
-            logger.warning("piper_not_installed")
+            logger.warning("piper_not_installed", trace_id=trace_id)
             return None
         except Exception as e:
-            logger.error("tts_error", error=str(e))
+            logger.error("tts_error", error=str(e), trace_id=trace_id)
             return None
 
     async def play_narration(self, narration: dict):
         """Play narration audio into the room."""
         text = narration.get("text", "")
+        trace_id = narration.get("traceId") or narration.get("pttSessionId")
+
         if not text:
             return
 
@@ -262,40 +380,37 @@ class DreamweaverAgent:
         self._narration = NarrationState(
             narration_id=narration_id,
             session_id=narration.get("sessionId", self.room_name),
+            trace_id=trace_id,
         )
 
-        # Emit NARRATION_START
         await self.emit_event({
             "type": "NARRATION_START",
             "sessionId": self._narration.session_id,
             "narrationId": narration_id,
             "ts": int(time.time() * 1000),
+            "traceId": trace_id,
         })
 
         try:
             await self._init_audio_track()
 
-            # Generate TTS
-            audio_data = await self.generate_tts(text)
+            audio_data = await self.generate_tts(text, trace_id)
             if audio_data is None:
-                # Fallback: just log that we would narrate
-                logger.info("narration_text_only", text=text)
-                await asyncio.sleep(len(text) * 0.05)  # Simulate speech time
+                logger.info("narration_text_only", text=text, trace_id=trace_id)
+                await asyncio.sleep(len(text) * 0.05)
             else:
-                # Play audio frames
                 frame_size = SAMPLE_RATE // 50  # 20ms frames
-                frame_bytes = frame_size * 2  # 16-bit samples
+                frame_bytes = frame_size * 2
 
                 for i in range(0, len(audio_data), frame_bytes):
                     if self._narration and self._narration.interrupted:
-                        logger.info("narration_interrupted_during_playback")
+                        logger.info("narration_interrupted_during_playback", trace_id=trace_id)
                         break
 
                     chunk = audio_data[i : i + frame_bytes]
                     if len(chunk) < frame_bytes:
                         chunk = chunk + b"\x00" * (frame_bytes - len(chunk))
 
-                    # Convert to AudioFrame
                     frame = rtc.AudioFrame(
                         data=chunk,
                         sample_rate=SAMPLE_RATE,
@@ -303,39 +418,39 @@ class DreamweaverAgent:
                         samples_per_channel=frame_size,
                     )
                     await self._audio_source.capture_frame(frame)
-                    await asyncio.sleep(0.02)  # 20ms per frame
+                    await asyncio.sleep(0.02)
 
             duration_ms = (time.time() - self._narration.started_at) * 1000
 
             if self._narration.interrupted:
-                # Emit NARRATION_INTERRUPT
                 await self.emit_event({
                     "type": "NARRATION_INTERRUPT",
                     "sessionId": self._narration.session_id,
                     "narrationId": narration_id,
-                    "identity": "ptt",  # Interrupted by PTT
+                    "identity": "ptt",
                     "reason": "ptt",
                     "ts": int(time.time() * 1000),
+                    "traceId": trace_id,
                 })
             else:
-                # Emit NARRATION_END
                 await self.emit_event({
                     "type": "NARRATION_END",
                     "sessionId": self._narration.session_id,
                     "narrationId": narration_id,
                     "durationMs": int(duration_ms),
                     "ts": int(time.time() * 1000),
+                    "traceId": trace_id,
                 })
 
         except Exception as e:
-            logger.error("narration_error", error=str(e))
+            logger.error("narration_error", error=str(e), trace_id=trace_id)
         finally:
             self._narration = None
 
     def interrupt_narration(self):
         """Interrupt any active narration."""
         if self._narration and not self._narration.interrupted:
-            logger.info("interrupting_narration", narration_id=self._narration.narration_id)
+            logger.info("interrupting_narration", narration_id=self._narration.narration_id, trace_id=self._narration.trace_id)
             self._narration.interrupted = True
 
     async def on_track_subscribed(
@@ -352,7 +467,6 @@ class DreamweaverAgent:
             participant=participant.identity,
         )
 
-        # Only process PTT tracks
         if publication.name == TRACK_NAME_PTT:
             logger.info(
                 "ptt_track_detected",
@@ -360,17 +474,14 @@ class DreamweaverAgent:
                 track_sid=track.sid,
             )
 
-            # INTERRUPT any active narration immediately
             self.interrupt_narration()
 
-            # Create local session state
             session = PttSessionState(
                 track_sid=track.sid,
                 identity=participant.identity,
             )
             self._ptt_sessions[track.sid] = session
 
-            # Emit PTT_TRACK_DETECTED event to server
             response = await self.emit_event({
                 "type": "PTT_TRACK_DETECTED",
                 "roomName": self.room_name,
@@ -380,7 +491,6 @@ class DreamweaverAgent:
                 "ts": int(time.time() * 1000),
             })
 
-            # Store pttSessionId from server response
             if response and "pttSessionId" in response:
                 session.ptt_session_id = response["pttSessionId"]
                 logger.info(
@@ -389,7 +499,6 @@ class DreamweaverAgent:
                     track_sid=track.sid,
                 )
 
-            # Start audio frame capture
             if isinstance(track, rtc.AudioTrack):
                 asyncio.create_task(self._capture_audio_frames(track, session))
 
@@ -398,12 +507,14 @@ class DreamweaverAgent:
         track: rtc.AudioTrack,
         session: PttSessionState,
     ):
-        """Capture audio frames from PTT track into buffer."""
+        """Capture audio frames with buffer cap enforcement."""
+        trace_id = session.ptt_session_id or session.track_sid
+
         logger.info(
             "ptt_audio_frames_started",
             track_sid=session.track_sid,
             identity=session.identity,
-            ptt_session_id=session.ptt_session_id,
+            trace_id=trace_id,
         )
 
         try:
@@ -411,32 +522,39 @@ class DreamweaverAgent:
             async for frame_event in audio_stream:
                 session.frame_count += 1
 
-                # Store sample rate from first frame
                 if session.frame_count == 1:
                     session.sample_rate = frame_event.frame.sample_rate
                     session.channels = frame_event.frame.num_channels
-                    logger.debug(
-                        "first_audio_frame",
-                        track_sid=session.track_sid,
-                        sample_rate=session.sample_rate,
-                        channels=session.channels,
-                    )
 
-                # Buffer the raw audio data
-                session.audio_buffer.append(bytes(frame_event.frame.data))
+                frame_data = bytes(frame_event.frame.data)
+
+                # Check buffer cap
+                if session.total_bytes + len(frame_data) > MAX_AUDIO_BYTES:
+                    if not session.capped:
+                        logger.warning(
+                            "audio_buffer_capped",
+                            trace_id=trace_id,
+                            max_bytes=MAX_AUDIO_BYTES,
+                        )
+                        session.capped = True
+                    continue  # Skip frame, don't add to buffer
+
+                session.audio_buffer.append(frame_data)
+                session.total_bytes += len(frame_data)
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error("audio_capture_error", error=str(e))
+            logger.error("audio_capture_error", error=str(e), trace_id=trace_id)
         finally:
             logger.info(
                 "ptt_audio_frames_stopped",
                 track_sid=session.track_sid,
                 identity=session.identity,
-                ptt_session_id=session.ptt_session_id,
+                trace_id=trace_id,
                 frame_count=session.frame_count,
-                buffer_size=len(session.audio_buffer),
+                buffer_bytes=session.total_bytes,
+                capped=session.capped,
             )
 
     async def on_participant_connected(self, participant: rtc.RemoteParticipant):
@@ -462,56 +580,51 @@ class DreamweaverAgent:
     ):
         """Called when a track is unsubscribed (ended)."""
         if publication.name == TRACK_NAME_PTT:
-            logger.info(
-                "ptt_track_ended",
-                participant=participant.identity,
-                track_sid=track.sid,
-            )
-
-            # Get session state
             session = self._ptt_sessions.pop(track.sid, None)
             if not session:
                 return
 
-            ptt_session_id = session.ptt_session_id
+            trace_id = session.ptt_session_id or session.track_sid
 
-            # Emit PTT_TRACK_ENDED event to server
+            logger.info(
+                "ptt_track_ended",
+                participant=participant.identity,
+                track_sid=track.sid,
+                trace_id=trace_id,
+            )
+
             await self.emit_event({
                 "type": "PTT_TRACK_ENDED",
                 "roomName": self.room_name,
                 "identity": participant.identity,
                 "trackSid": track.sid,
                 "ts": int(time.time() * 1000),
+                "traceId": trace_id,
             })
 
-            # Transcribe the buffered audio
+            # Transcribe with timeout
             transcription = await self.transcribe_audio(session)
             if transcription:
                 text, latency_ms = transcription
 
-                # Emit COMMAND_TRANSCRIBED
-                response = await self.emit_event({
+                # Emit COMMAND_TRANSCRIBED (server returns 202, narration via Redis)
+                await self.emit_event({
                     "type": "COMMAND_TRANSCRIBED",
                     "sessionId": self.room_name,
-                    "pttSessionId": ptt_session_id or "",
+                    "pttSessionId": session.ptt_session_id or "",
                     "identity": participant.identity,
                     "text": text,
                     "latencyMs": int(latency_ms),
                     "ts": int(time.time() * 1000),
+                    "traceId": trace_id,
                 })
-
-                # Check if server returned narration
-                if response and "narration" in response:
-                    narration = response["narration"]
-                    logger.info(
-                        "narration_ready_received",
-                        text=narration.get("text", "")[:50],
-                    )
-                    # Play the narration
-                    asyncio.create_task(self.play_narration(narration))
 
     async def cleanup(self):
         """Clean up resources."""
+        if self._redis_subscription_task:
+            self._redis_subscription_task.cancel()
+        if self._redis:
+            await self._redis.close()
         await self._http_client.aclose()
 
 
@@ -531,8 +644,10 @@ async def entrypoint(ctx: agents.JobContext):
     await ctx.connect()
     logger.info("agent_connected", room=ctx.room.name)
 
+    # Start Redis subscription for narration
+    agent._redis_subscription_task = asyncio.create_task(agent._subscribe_narration())
+
     try:
-        # Keep agent running
         while True:
             await asyncio.sleep(1)
     finally:
@@ -540,7 +655,6 @@ async def entrypoint(ctx: agents.JobContext):
 
 
 if __name__ == "__main__":
-    # Run as LiveKit agent
     agents.cli.run_app(
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,

@@ -13,6 +13,7 @@ export interface BaseEvent {
   type: string;
   eventId: string;  // uuid v4 - REQUIRED for idempotency
   ts: number;       // unix ms
+  traceId?: string; // Optional: correlates events across pipeline (use pttSessionId)
 }
 
 // ============================================================================
@@ -326,6 +327,20 @@ export const CONSTANTS = {
 
   // Event deduplication
   EVENT_DEDUP_TTL_MS: 60000,  // 1 minute TTL for seen event IDs
+
+  // Day 4 hardening: caps and timeouts
+  MAX_PTT_SECONDS: 5,                    // Hard cap on PTT duration
+  MAX_AUDIO_BYTES: 48000 * 5 * 2 * 1,    // sample_rate * seconds * bytes_per_sample * channels
+  STT_TIMEOUT_SECONDS: 8,                // Max time for STT processing
+  GM_TIMEOUT_SECONDS: 3,                 // Max time for GM response
+  TTS_TIMEOUT_SECONDS: 5,                // Max time for TTS generation
+
+  // Audio normalization
+  TARGET_LUFS: -16,                      // Target loudness for narration
+  TARGET_RMS_DB: -18,                    // Target RMS level
+
+  // Redis pub/sub channels
+  REDIS_NARRATION_CHANNEL_PREFIX: 'dreamweaver:narration:',  // + roomName
 } as const;
 
 // ============================================================================

@@ -8,10 +8,12 @@
  * - WebSocket events
  * - Event ingestion from agent
  * - PTT session window management
+ * - Async narration delivery via Redis pub/sub
  */
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { createClient, type RedisClientType } from 'redis';
 import {
   CONSTANTS,
   generateEventId,
@@ -29,6 +31,52 @@ import {
 } from '@dreamweaver/shared/gm_policy';
 
 const app = new Hono();
+
+// ============================================================================
+// Redis Client (for async narration delivery)
+// ============================================================================
+
+const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
+let redis: RedisClientType | null = null;
+
+async function getRedis(): Promise<RedisClientType> {
+  if (redis && redis.isOpen) {
+    return redis;
+  }
+
+  redis = createClient({ url: REDIS_URL });
+  redis.on('error', (err) => {
+    console.error(JSON.stringify({ level: 'error', msg: 'redis_error', error: String(err) }));
+  });
+
+  await redis.connect();
+  console.log(JSON.stringify({ level: 'info', msg: 'redis_connected', url: REDIS_URL }));
+  return redis;
+}
+
+/**
+ * Publish narration to Redis channel for async delivery.
+ */
+async function publishNarration(roomName: string, narration: NarrationReady): Promise<void> {
+  try {
+    const client = await getRedis();
+    const channel = `${CONSTANTS.REDIS_NARRATION_CHANNEL_PREFIX}${roomName}`;
+    await client.publish(channel, JSON.stringify(narration));
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'narration_published',
+      channel,
+      ptt_session_id: narration.pttSessionId,
+      trace_id: narration.traceId,
+    }));
+  } catch (err) {
+    console.error(JSON.stringify({
+      level: 'error',
+      msg: 'narration_publish_failed',
+      error: String(err),
+    }));
+  }
+}
 
 // ============================================================================
 // Event Deduplication Cache (in-memory, will move to Redis)
@@ -88,6 +136,9 @@ interface PttSession {
 // Map: trackSid -> PttSession
 const activePttSessions = new Map<string, PttSession>();
 
+// Map: pttSessionId -> roomName (for lookup after session closed)
+const sessionToRoom = new Map<string, string>();
+
 function createPttSession(event: PttTrackDetected): PttSession {
   const session: PttSession = {
     pttSessionId: generateEventId(),
@@ -97,6 +148,7 @@ function createPttSession(event: PttTrackDetected): PttSession {
     startedAt: event.ts,
   };
   activePttSessions.set(event.trackSid, session);
+  sessionToRoom.set(session.pttSessionId, event.roomName);
   return session;
 }
 
@@ -105,13 +157,14 @@ function closePttSession(event: PttTrackEnded): PttSession | null {
   if (session) {
     session.endedAt = event.ts;
     activePttSessions.delete(event.trackSid);
+    // Keep sessionToRoom for async narration lookup
     return session;
   }
   return null;
 }
 
-function getPttSessionByTrack(trackSid: string): PttSession | undefined {
-  return activePttSessions.get(trackSid);
+function getRoomForSession(pttSessionId: string): string | undefined {
+  return sessionToRoom.get(pttSessionId);
 }
 
 // ============================================================================
@@ -125,6 +178,14 @@ function getPttSessionByTrack(trackSid: string): PttSession | undefined {
  */
 function generateGMResponse(command: string, identity: string): GMResponse {
   const lowerCommand = command.toLowerCase().trim();
+
+  // Handle timeout/error cases
+  if (lowerCommand.includes('__timeout__') || lowerCommand.includes('__error__')) {
+    return {
+      narration: `I didn't catch that. Could you repeat what you said?`,
+      choices: ['repeat', 'skip'],
+    };
+  }
 
   // Simple keyword-based responses for Day 3 demo
   if (lowerCommand.includes('look') || lowerCommand.includes('examine')) {
@@ -164,21 +225,25 @@ function generateGMResponse(command: string, identity: string): GMResponse {
 
 /**
  * Process a transcribed command and generate narration.
+ * Returns commandId for tracking; narration is published async via Redis.
  */
-function processCommand(event: CommandTranscribed): NarrationReady | null {
+async function processCommandAsync(event: CommandTranscribed): Promise<string> {
   const { text, identity, sessionId, pttSessionId } = event;
+  const commandId = generateEventId();
+  const traceId = pttSessionId || commandId;
 
   // Skip placeholder/empty commands
-  if (!text || text.startsWith('__') || text.length < 2) {
+  if (!text || text.startsWith('__') && !text.includes('timeout') || text.length < 2) {
     console.log(JSON.stringify({
       level: 'info',
       msg: 'skipping_placeholder_command',
       text,
+      trace_id: traceId,
     }));
-    return null;
+    return commandId;
   }
 
-  // Generate GM response
+  // Generate GM response (async-safe but currently sync)
   let gmResponse = generateGMResponse(text, identity);
 
   // Validate against driving policy
@@ -188,6 +253,7 @@ function processCommand(event: CommandTranscribed): NarrationReady | null {
       level: 'warn',
       msg: 'gm_response_validation_failed',
       violations: validation.violations,
+      trace_id: traceId,
     }));
     // Use fallback
     gmResponse = {
@@ -206,17 +272,26 @@ function processCommand(event: CommandTranscribed): NarrationReady | null {
     choices: gmResponse.choices,
     mode: 'driving',  // Always driving mode for MVP
     ts: Date.now(),
+    traceId,  // Correlate across events
   };
 
   console.log(JSON.stringify({
     level: 'info',
     msg: 'narration_ready',
+    command_id: commandId,
     ptt_session_id: pttSessionId,
     text: narration.text.substring(0, 50),
     choices: narration.choices,
+    trace_id: traceId,
   }));
 
-  return narration;
+  // Publish to Redis asynchronously
+  const roomName = getRoomForSession(pttSessionId) || sessionId;
+  publishNarration(roomName, narration).catch((err) => {
+    console.error('Failed to publish narration:', err);
+  });
+
+  return commandId;
 }
 
 // ============================================================================
@@ -230,12 +305,21 @@ app.use('*', cors());
 // ============================================================================
 
 // Health check (legacy)
-app.get('/health', (c) => {
+app.get('/health', async (c) => {
+  let redisStatus = 'disconnected';
+  try {
+    const client = await getRedis();
+    await client.ping();
+    redisStatus = 'healthy';
+  } catch {
+    redisStatus = 'error';
+  }
+
   return c.json({
     status: 'healthy',
     timestamp: Date.now(),
     services: {
-      redis: 'pending',
+      redis: redisStatus,
       livekit: 'pending',
     },
   });
@@ -266,6 +350,9 @@ app.post('/events', async (c) => {
       return c.json({ error: 'INVALID_EVENT', message: 'Missing eventId' }, 400);
     }
 
+    // Extract traceId for logging
+    const traceId = event.traceId || event.eventId;
+
     // Idempotency check (scoped by type:eventId)
     if (isDuplicateEvent(event.type, event.eventId)) {
       console.log(JSON.stringify({
@@ -273,6 +360,7 @@ app.post('/events', async (c) => {
         msg: 'event_deduped',
         event_id: event.eventId,
         event_type: event.type,
+        trace_id: traceId,
       }));
       return c.json({ status: 'accepted', deduped: true, event_type: event.type });
     }
@@ -287,6 +375,7 @@ app.post('/events', async (c) => {
       event_id: event.eventId,
       event_type: event.type,
       ts: event.ts,
+      trace_id: traceId,
       ...('sessionId' in event && { session_id: event.sessionId }),
       ...('identity' in event && { identity: event.identity }),
       ...('roomName' in event && { room_name: event.roomName }),
@@ -304,6 +393,7 @@ app.post('/events', async (c) => {
           ptt_session_id: pttSession.pttSessionId,
           identity: pttSession.identity,
           room_name: pttSession.roomName,
+          trace_id: pttSession.pttSessionId,
         }));
         responseData.pttSessionId = pttSession.pttSessionId;
         break;
@@ -319,6 +409,7 @@ app.post('/events', async (c) => {
             ptt_session_id: closedSession.pttSessionId,
             identity: closedSession.identity,
             duration_ms: duration,
+            trace_id: closedSession.pttSessionId,
           }));
           responseData.pttSessionId = closedSession.pttSessionId;
           responseData.durationMs = duration;
@@ -340,8 +431,8 @@ app.post('/events', async (c) => {
           ptt_session_id: cmd.pttSessionId,
           identity: cmd.identity,
           text: cmd.text,
+          trace_id: cmd.pttSessionId,
         }));
-        // TODO: Route to game engine
         break;
       }
 
@@ -354,14 +445,17 @@ app.post('/events', async (c) => {
           identity: cmd.identity,
           text: cmd.text,
           latency_ms: cmd.latencyMs,
+          trace_id: cmd.pttSessionId,
         }));
 
-        // Process command and generate narration
-        const narration = processCommand(cmd);
-        if (narration) {
-          responseData.narration = narration;
-        }
-        break;
+        // Process command asynchronously, return 202 Accepted
+        const commandId = await processCommandAsync(cmd);
+        return c.json({
+          status: 'accepted',
+          event_type: event.type,
+          commandId,
+          // Narration will be delivered via Redis pub/sub
+        }, 202);
       }
 
       default:
@@ -415,6 +509,11 @@ app.post('/auth/token', async (c) => {
 
 const port = parseInt(process.env.PORT || '3000');
 console.log(`Dreamweaver server starting on port ${port}`);
+
+// Initialize Redis connection on startup
+getRedis().catch((err) => {
+  console.error('Failed to connect to Redis on startup:', err);
+});
 
 export default {
   port,
