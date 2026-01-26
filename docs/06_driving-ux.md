@@ -14,6 +14,43 @@ The driver must be able to:
 - Handle interrupts without unsafe behavior
 - End/pause at any moment
 
+---
+
+## Hard Rules (Non-Negotiable)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DRIVING UX HARD RULES                                │
+│                                                                         │
+│  1. MAX NARRATION: 12 seconds per chunk (6-12s preferred)              │
+│     - Longer content split with natural pauses                         │
+│     - Player can always interrupt                                       │
+│                                                                         │
+│  2. INTERRUPTIONS ALWAYS WIN                                            │
+│     - Phone call → instant pause, duck audio                           │
+│     - Navigation prompt → duck, wait, resume                           │
+│     - Player "pause" → immediate stop                                   │
+│                                                                         │
+│  3. NO BACK-AND-FORTH CONFIRMATIONS                                     │
+│     - Bad: "Did you say attack? Say yes to confirm."                   │
+│     - Good: "Theron attacks!" (just do it, player can undo)            │
+│                                                                         │
+│  4. TINY COMMAND SET (memorizable)                                      │
+│     - repeat, pause, resume                                             │
+│     - choice 1/2/3 (for decisions)                                      │
+│     - inventory, status                                                 │
+│     - help                                                              │
+│                                                                         │
+│  5. FAIL GRACEFULLY                                                     │
+│     - Unclear command → "I didn't catch that" (not error)              │
+│     - Timeout → auto-pause (not abandon)                                │
+│     - Disconnect → hold state, welcome back                             │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Allowed Commands (Voice Only)
 
 ### Session Commands

@@ -4,51 +4,116 @@
 
 Dreamweaver's core experience is a real-time voice "call" where players talk naturally while an AI Game Master narrates the adventure. This document specifies how voice flows between participants and how AI narration interleaves with live conversation.
 
-## How the "Call" Works
+---
 
-### Architecture
+## Explicit MVP Decisions (Non-Negotiable)
+
+### Decision 1: LiveKit for SFU
+**Choice:** LiveKit Cloud (free tier) for MVP, self-hosted LiveKit for production.
+
+**Why:** Production-ready SFU with React Native SDK. Free tier supports 100 monthly active users. Handles WebRTC complexity, TURN, echo cancellation. Alternative (mediasoup) would cost 3+ days of setup alone.
+
+### Decision 2: Hybrid Voice Model
+**Choice:** Open-mic for social chat + Push-to-talk for game commands.
+
+| Mode | When | How |
+|------|------|-----|
+| **Open-mic** | Default state | Players chat freely, LiveKit handles all audio |
+| **PTT command** | Player holds button | Audio routed to STT for game action processing |
+
+**Why:** Solves "who is talking" without diarization. Social chat doesn't need attribution. Only game commands (actions, choices) need speaker ID, and PTT gives us that with 100% accuracy.
+
+### Decision 3: AI Narration as Separate Track
+**Choice:** Server publishes GM narration as dedicated LiveKit audio track. Clients apply local ducking.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         VOICE TOPOLOGY: SFU                             │
+│                    AI NARRATION INJECTION                               │
+│                                                                         │
+│  Server                         LiveKit                    Clients      │
+│    │                               │                          │         │
+│    │── Publish "gm-narrator" ─────>│                          │         │
+│    │   track with TTS audio        │── Distribute track ─────>│         │
+│    │                               │                          │         │
+│    │                               │   Client-side logic:     │         │
+│    │                               │   - Duck GM 80% when     │         │
+│    │                               │     local PTT active     │         │
+│    │                               │   - Pause TTS on any     │         │
+│    │                               │     player interrupt     │         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why:** Clean separation. GM audio is just another track—LiveKit handles distribution. Client-side ducking is simple gain adjustment.
+
+### Decision 4: Command Detection via PTT Button
+**Choice:** Client button (screen tap, earbud tap, Bluetooth button) starts command capture. No always-on diarization.
+
+**Flow:**
+1. Player holds PTT button
+2. Client captures audio chunk
+3. Audio sent to server
+4. Server runs STT → action text
+5. Action processed by game engine
+
+**Why:** Always-on diarization is too expensive (compute, battery) and too inaccurate (70-85%) for MVP. PTT is simple, accurate, driving-safe.
+
+---
+
+## How the "Call" Works
+
+### Architecture (LiveKit-Based)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         VOICE TOPOLOGY: LiveKit SFU                     │
 │                                                                         │
 │     Player A ─────┐                          ┌───── Player C            │
 │     (speaking)    │                          │      (listening)         │
 │                   ▼                          │                          │
 │              ┌─────────────────────────┐     │                          │
-│              │   Selective Forwarding  │     │                          │
-│              │        Unit (SFU)       │◄────┘                          │
+│              │      LiveKit Server     │     │                          │
+│              │    (Cloud or Self-Host) │◄────┘                          │
 │              │                         │                                │
 │              │  • Receives all streams │                                │
 │              │  • Forwards selectively │                                │
-│              │  • Mixes AI narration   │                                │
-│              │  • Detects active       │                                │
-│              │    speaker              │                                │
+│              │  • Sub-100ms latency    │                                │
+│              │  • Built-in echo cancel │                                │
 │              └───────────┬─────────────┘                                │
 │                          │                                              │
-│     Player B ◄───────────┴───────────────────────► AI Narrator          │
-│     (listening)                                    (TTS output)         │
+│     Player B ◄───────────┤                                              │
+│     (listening)          │                                              │
+│                          │                                              │
+│     Dreamweaver Server ──┴──> Publishes "gm-narrator" audio track       │
+│     (hidden participant)                                                │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Connection Flow
+### Connection Flow (LiveKit)
 
 ```
 1. Host creates session
-   └─> Server allocates room
-   └─> Server returns room code + WebRTC offer
+   └─> Server creates game session + LiveKit room (same room code)
+   └─> Server returns room code + LiveKit access token
 
 2. Players join
-   └─> Client sends room code
-   └─> Server validates, returns WebRTC answer
-   └─> ICE candidates exchanged
-   └─> Media flows established
+   └─> Client sends room code to game server
+   └─> Server validates, returns LiveKit access token
+   └─> Client connects to LiveKit with token
+   └─> Audio flows established automatically
 
 3. Voice channel open
-   └─> All participants hear each other
-   └─> Server can inject AI audio
-   └─> Server receives all audio for STT
+   └─> All participants hear each other (LiveKit handles)
+   └─> Server joins as hidden participant
+   └─> Server publishes "gm-narrator" audio track
+   └─> Server subscribes to player tracks for STT
+
+4. Command flow (PTT)
+   └─> Player holds PTT button
+   └─> Client sends audio to game server (separate from LiveKit)
+   └─> Server runs STT → game action
+   └─> Server generates response → TTS → publishes to GM track
 ```
 
 ### Protocol Stack

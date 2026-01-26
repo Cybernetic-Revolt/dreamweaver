@@ -1,6 +1,6 @@
 # Dreamweaver - LLM Index (Curated)
 # Voice-first, multiplayer, AI-driven RPG for driving-safe gameplay
-# Last updated: 2026-01-26
+# Last updated: 2026-01-26 (post-ChatGPT review)
 
 ## Primary Documents (read these first)
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md

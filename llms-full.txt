@@ -1,6 +1,6 @@
 # Dreamweaver - Full File Manifest
 # All spec/docs/plans/api files
-# Last updated: 2026-01-26
+# Last updated: 2026-01-26 (post-ChatGPT review)
 
 ## Documentation
 https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md

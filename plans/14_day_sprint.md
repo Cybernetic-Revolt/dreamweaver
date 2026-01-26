@@ -37,13 +37,14 @@ This sprint delivers a playable Dreamweaver MVP: a voice-first, multiplayer AI R
 
 ---
 
-## Day 1: Project Setup + Voice Proof of Concept
+## Day 1: Project Setup + LiveKit Voice POC
 
 ### Deliverables
 - [ ] Repository structure created
 - [ ] Bun + Hono server scaffolded
 - [ ] React Native + Expo app scaffolded
-- [ ] WebRTC voice connection between 2 clients (echo test)
+- [ ] LiveKit Cloud account created (free tier)
+- [ ] LiveKit voice connection between 2 clients
 - [ ] Basic health endpoint
 
 ### Tasks
@@ -51,22 +52,23 @@ This sprint delivers a playable Dreamweaver MVP: a voice-first, multiplayer AI R
 ```bash
 # Morning: Server setup
 mkdir -p server/{src/{routes,ws,game,ai,voice,data,utils},adventures}
-cd server && bun init && bun add hono redis zod yaml nanoid
+cd server && bun init && bun add hono redis zod yaml nanoid livekit-server-sdk
 
 # Afternoon: Mobile setup
 npx create-expo-app app --template tabs
-cd app && npx expo install expo-av react-native-webrtc
+cd app && npx expo install expo-av @livekit/react-native @livekit/react-native-webrtc
 
-# Evening: Voice POC
-# - Simple WebRTC peer connection
-# - Audio flows between two clients
-# - Server acts as signaling relay
+# Evening: LiveKit POC
+# - Create LiveKit Cloud project (livekit.cloud)
+# - Server generates access tokens
+# - Two phones join same LiveKit room
+# - Audio flows between clients
 ```
 
 ### Acceptance Check
 - [ ] `curl http://localhost:3000/health` returns 200
 - [ ] Expo app launches in simulator
-- [ ] Two phones can hear each other via WebRTC
+- [ ] Two phones can hear each other via LiveKit room
 
 ---
 
@@ -110,40 +112,64 @@ cd app && npx expo install expo-av react-native-webrtc
 ## Day 3: Walking Skeleton Complete
 
 ### Deliverables
-- [ ] Voice chat working between 3+ players
-- [ ] Push-to-talk implementation
-- [ ] Speaker identification (who is talking)
-- [ ] Basic game state synchronization
+- [ ] Mobile app connects to game server
+- [ ] Join session with room code works
+- [ ] LiveKit room works (3 phones can talk)
+- [ ] Server can inject pre-recorded "GM voice" track
+- [ ] Minimal state machine (lobby → playing → ended)
+- [ ] Push-to-talk button captures audio
 - [ ] **MILESTONE: Walking skeleton complete**
 
-### Tasks
+### Walking Skeleton Requirements (Non-Negotiable)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    WALKING SKELETON                                     │
+│                    WALKING SKELETON CHECKLIST                           │
 │                                                                         │
-│  Client A (Host)                                                        │
-│      │                                                                  │
-│      ├── Creates session ──> Server ──> Room code "ABC123"             │
-│      │                                                                  │
-│  Client B                                                               │
-│      │                                                                  │
-│      ├── Joins "ABC123" ──> Server ──> Notify A                        │
-│      │                                                                  │
-│  Both Clients                                                           │
-│      │                                                                  │
-│      ├── PTT sends audio ──> Server ──> Forwards to others             │
-│      ├── Receive audio ──> Play through speaker                        │
-│      └── State updates ──> Both see same session state                 │
+│  ✓ Mobile connects to server (WebSocket)                               │
+│  ✓ Join session works (room code validation)                           │
+│  ✓ LiveKit room works (2+ phones can talk freely)                      │
+│  ✓ Server can inject audio track (pre-recorded test clip)              │
+│  ✓ Minimal state machine (3 states minimum)                            │
+│  ✓ PTT button on client captures audio chunk                           │
+│                                                                         │
+│  If ANY of these fail by Day 3, STOP and fix before proceeding.        │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Tasks
+
+```
+1. LiveKit integration complete
+   └─> Server: generate access tokens
+   └─> Client: join LiveKit room with token
+   └─> Verify: 3 devices in voice chat
+
+2. Server joins as hidden participant
+   └─> Server connects to LiveKit room
+   └─> Server publishes test audio track ("Hello adventurers")
+   └─> Verify: all clients hear injected audio
+
+3. PTT implementation
+   └─> Button on screen (PTT)
+   └─> When held: capture audio, mark as "speaking"
+   └─> Send audio chunk to server via WebSocket
+   └─> Server logs receipt (STT comes Day 4)
+
+4. State machine scaffold
+   └─> States: LOBBY, PLAYING, ENDED
+   └─> Transitions: start_game, end_game
+   └─> All clients sync state via WebSocket
+```
+
 ### Acceptance Check
-- [ ] 3 players in voice chat simultaneously
-- [ ] PTT shows who is speaking
-- [ ] All players see same session state
+- [ ] 3 players in voice chat simultaneously via LiveKit
+- [ ] Server-injected audio heard by all clients
+- [ ] PTT button captures and sends audio to server
+- [ ] State machine transitions work (lobby → playing)
 - [ ] Player disconnect detected within 5 seconds
+- [ ] All clients show same session state
 
 ---
 

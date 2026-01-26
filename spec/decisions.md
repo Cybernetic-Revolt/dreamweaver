@@ -333,18 +333,18 @@ Need to route voice between multiple players. Options: mesh, SFU, MCU.
 
 ### Decision
 
-**Option B: Selective Forwarding Unit (SFU)**
+**Option B: Selective Forwarding Unit (SFU) via LiveKit**
 
 ### Rationale
 
 1. Scales better than mesh (critical for 5 players)
 2. Lower latency than MCU (no server mixing)
 3. Server can inject AI audio easily
-4. Well-supported by mediasoup/Janus/Livekit
+4. LiveKit specifically chosen (see D015)
 
 ### Consequences
 
-- Need SFU server component
+- Need SFU server component (LiveKit handles this)
 - Server sees all audio (can process for STT)
 - Moderate server bandwidth usage
 
@@ -472,6 +472,130 @@ Need to enforce driving-safe UX. Options range from honor system to technical en
 
 ---
 
+## D015: LiveKit for SFU Implementation
+
+**Date:** Planning Phase (Updated after ChatGPT review)
+**Status:** Accepted
+
+### Context
+
+D010 decided on SFU topology. Now we need to choose a specific SFU implementation.
+
+### Options Considered
+
+| Option | Pros | Cons |
+|--------|------|------|
+| **LiveKit** | Production-ready, free tier, React Native SDK, self-host option | Another service |
+| **mediasoup** | Full control, no vendor lock-in | Complex setup, 3+ days alone |
+| **Janus** | Flexible, plugins | Steep learning curve |
+| **Twilio** | Reliable, easy | Expensive ($0.004/min/participant) |
+| **Raw WebRTC** | No dependencies | Doesn't scale past 3 players |
+
+### Decision
+
+**LiveKit Cloud (free tier) for MVP, self-hosted LiveKit for production**
+
+### Rationale
+
+1. **Time to MVP:** LiveKit SDK gets voice working in hours, not days
+2. **Free tier:** 100 monthly active users, sufficient for MVP
+3. **React Native support:** Official SDK, well-documented
+4. **Self-host option:** Can migrate to own server when needed
+5. **AI integration:** Server can join as participant, inject GM audio track
+
+### Implementation Details
+
+```
+MVP: LiveKit Cloud
+  └─> livekit.cloud free tier
+  └─> API keys in env
+
+Production: Self-hosted
+  └─> livekit-server in Proxmox LXC
+  └─> Same client code, different URL
+```
+
+### Consequences
+
+- Dependency on LiveKit SDK
+- Need LiveKit Cloud account for MVP
+- Clean migration path to self-hosted
+
+---
+
+## D016: Hybrid Voice Model (Open-Mic + PTT Commands)
+
+**Date:** Planning Phase (Added after ChatGPT review)
+**Status:** Accepted
+
+### Context
+
+Need to define when players use open-mic vs push-to-talk.
+
+### Decision
+
+**Open-mic for social chat, Push-to-talk for game commands only**
+
+### Rationale
+
+1. Social chat doesn't need speaker attribution (just conversation)
+2. Game commands need 100% accurate attribution (who said "I attack")
+3. PTT gives accurate attribution without diarization
+4. Open-mic keeps conversation natural
+5. Reduces PTT fatigue for casual banter
+
+### Implementation
+
+| Mode | Trigger | Audio Flow |
+|------|---------|------------|
+| Open-mic | Default | LiveKit handles, all hear all |
+| PTT command | Hold button | Audio → Server → STT → Game action |
+
+### Consequences
+
+- Two audio paths to implement
+- Clear UX distinction needed (button for commands)
+- STT only processes PTT audio (reduces compute)
+
+---
+
+## D017: AI Narration as Separate Audio Track
+
+**Date:** Planning Phase (Added after ChatGPT review)
+**Status:** Accepted
+
+### Context
+
+Need to define how AI Game Master audio is delivered to players.
+
+### Decision
+
+**Server publishes GM narration as dedicated LiveKit audio track with client-side ducking**
+
+### Rationale
+
+1. Clean separation from player audio
+2. LiveKit handles distribution automatically
+3. Client can duck GM volume when player speaks (local gain control)
+4. Server controls when GM speaks (no collision with player audio)
+
+### Implementation
+
+```
+Server joins LiveKit room as hidden participant
+Server publishes track named "gm-narrator"
+Client subscribes to all tracks
+Client applies ducking: if (localPTTActive) gmTrack.volume = 0.2
+```
+
+### Consequences
+
+- Server must maintain LiveKit connection
+- Ducking logic in client
+- Clean audio mixing without server-side MCU
+
+---
+
 ## Decision Index
 
 | ID | Decision | Date | Status |
@@ -486,6 +610,9 @@ Need to enforce driving-safe UX. Options range from honor system to technical en
 | D008 | Redis + SQLite | Planning | Accepted |
 | D009 | YAML Adventure Format | Planning | Accepted |
 | D010 | SFU Voice Topology | Planning | Accepted |
+| D015 | LiveKit for SFU | Planning | Accepted |
+| D016 | Hybrid Voice Model | Planning | Accepted |
+| D017 | AI Narration Track | Planning | Accepted |
 | D011 | Minimal Character System | Planning | Accepted |
 | D012 | Single-Session Adventures | Planning | Accepted |
 | D013 | Bun Runtime | Planning | Accepted |

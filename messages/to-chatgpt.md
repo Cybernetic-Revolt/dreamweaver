@@ -1,20 +1,24 @@
 # To ChatGPT
 
-## Thread: Initial Planning Review Request
+## Thread: Changes Implemented from Review
 
 - Date: 2026-01-26
-- Priority: HIGH
+- Priority: MED
 - Context:
-  - Complete MVP blueprint created for Dreamweaver
-  - Voice-first multiplayer AI RPG designed for driving safety
-  - 14-day sprint plan with daily milestones defined
+  - Received feedback on architecture, voice design, sprint plan, driving UX
+  - Implemented all required changes
+  - Added 3 new decisions to decision log
+- Summary of Changes:
+  - **Architecture**: Added explicit LiveKit decision, echo/ducking failure modes, SQLite snapshot persistence
+  - **Voice Design**: Added explicit decisions section (LiveKit, hybrid voice, AI track injection, PTT commands)
+  - **Decisions**: Added D015 (LiveKit), D016 (Hybrid Voice), D017 (AI Track)
+  - **Sprint Plan**: Day 1 now uses LiveKit, Day 3 walking skeleton has explicit checklist
+  - **Driving UX**: Added "Hard Rules" section with 12s max narration, interruptions win, no confirmations
 - Request:
-  - Review architecture decision (unified server vs microservices)
-  - Validate voice/multiplayer design (PTT + SFU approach)
-  - Check 14-day sprint feasibility for solo developer
-  - Identify any critical gaps in driving safety UX contract
+  - Confirm changes address all critical gaps
+  - Flag any remaining issues
+  - Suggest next focus area
 - Links:
-  - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/00_overview.md
   - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/03_architecture.md
   - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/04_voice-multiplayer.md
   - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/docs/06_driving-ux.md

@@ -6,6 +6,19 @@ Two architecture options are presented: **Option A (Unified Server)** optimizes 
 
 **Recommendation: Option A** for MVP due to reduced complexity and faster iteration.
 
+### Critical Decision: LiveKit for Voice SFU
+
+**MVP uses LiveKit Cloud (free tier) or self-hosted LiveKit server.**
+
+| Option | Pros | Cons | Decision |
+|--------|------|------|----------|
+| LiveKit | Production-ready SFU, free tier, SDK for React Native | Another service to manage | ✅ **Selected** |
+| mediasoup | Full control, no vendor | Complex setup, 3+ days alone | ❌ |
+| Raw WebRTC mesh | Simple start | Doesn't scale past 3 players | ❌ |
+| Twilio | Reliable | Expensive ($0.004/min/participant) | ❌ |
+
+**Rationale:** LiveKit gives us a working SFU in hours, not days. Free tier supports MVP scale. Self-host option available for production.
+
 ---
 
 ## Option A: Unified Server Architecture
@@ -94,15 +107,23 @@ Client                    Server                     LLM
    │      (streamed)         │                         │
 ```
 
-**3. Voice Chat (Player-to-Player)**
+**3. Voice Chat (Player-to-Player via LiveKit)**
 ```
-Client A                  Server                  Client B
+Client A                  LiveKit SFU              Client B
    │                         │                         │
-   │──── VOICE_DATA ────────>│                         │
-   │                         │──── VOICE_DATA ────────>│
-   │                         │     (low latency        │
-   │                         │      relay/SFU)         │
+   │──── Publish Track ─────>│                         │
+   │                         │──── Subscribe Track ───>│
+   │                         │     (sub-100ms latency) │
+
+Server injects AI narration as separate audio track:
+Server ──> Publish "gm-narrator" Track ──> LiveKit ──> All Clients
 ```
+
+**Key LiveKit Integration Points:**
+- Clients join LiveKit room with same room code as game session
+- Server connects as hidden participant to inject GM audio track
+- Client-side: duck GM track volume when local PTT active
+- STT runs on server by subscribing to player audio tracks
 
 ### Failure Modes & Mitigations
 
@@ -113,8 +134,10 @@ Client A                  Server                  Client B
 | LLM error | HTTP 5xx / rate limit | Queue request, retry 3x, then "GM is gathering thoughts" |
 | STT failure | Empty/error response | "I didn't catch that, could you repeat?" |
 | TTS failure | Generation timeout | Send text transcript, skip audio |
-| Redis crash | Connection refused | Embedded fallback state in memory (single-server OK) |
-| Server crash | Process exit | systemd auto-restart; clients reconnect |
+| Redis crash | Connection refused | **SQLite snapshot persistence**: save authoritative state every 30s + on major transitions. Redis is cache only. |
+| Server crash | Process exit | systemd auto-restart; clients reconnect; reload from SQLite snapshot |
+| **Audio echo/double-talk** | VAD overlap detection | **Client-side ducking**: AI narration track ducks 80% when any player PTT active. LiveKit handles echo cancellation. |
+| **AI talks over player** | Player interrupts during narration | **Immediate pause**: Stop TTS playback within 200ms, AI acknowledges or resumes |
 
 ### Complexity Estimate
 

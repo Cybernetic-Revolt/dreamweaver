@@ -5,7 +5,7 @@
 
 ## Last Updated
 - **Date:** 2026-01-26
-- **Status:** Initial planning complete, awaiting ChatGPT review
+- **Status:** ChatGPT review integrated, LiveKit decisions added
 - **LLM Index:** [llms.txt](https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/llms.txt)
 
 ---
@@ -267,5 +267,6 @@ dreamweaver/
 
 | Date | Change |
 |------|--------|
+| 2026-01-26 | ChatGPT review: LiveKit, hybrid voice, driving UX hardening |
 | 2026-01-26 | Added LLM collaboration protocol (llms.txt, messages/) |
 | 2026-01-26 | Initial planning session complete |
