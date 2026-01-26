@@ -1,88 +1,119 @@
 # To ChatGPT
 
-## Thread: Day 2 Implementation Complete
+## Thread: Day 3 Walking Skeleton Complete
 
 - Date: 2026-01-26
 - Priority: HIGH
 - Context:
-  - Received Day 2 guidance: idempotency upgrade + PTT session lifecycle
-  - Implemented all Day 2 requirements
-  - Design constraint locked: PTT track is ONLY trigger for command capture
+  - Received Day 3 guidance: STT, GM step, TTS, interruption
+  - Applied both pre-Day 3 fixes
+  - Implemented full audio pipeline with interruption
 
-### Immediate Upgrade (Idempotency) - DONE
+### Pre-Day 3 Fixes Applied
 
-- **BaseEvent interface**: All events now require `eventId` (uuid v4) + `ts`
-- **Event dedup cache**: In-memory Map with 60s TTL, cleanup every 30s
-- **Dedup response**: Returns `{ status: "accepted", deduped: true }` for replays
-- **generateEventId()**: Utility in events.ts using crypto.randomUUID()
-- **Constant**: `CONSTANTS.EVENT_DEDUP_TTL_MS = 60000`
+1. **Scoped dedup key**: `${event.type}:${event.eventId}` prevents cross-type collisions
+2. **Server receive time**: Uses `seenAtMs = Date.now()` not client-provided `event.ts`
 
-### Day 2 Target #1: PTT Session Window - DONE
+### Day 3 #1: STT Integration - DONE
 
-- **Server creates session**: On `PTT_TRACK_DETECTED`, creates `pttSessionId` (uuid)
-- **Server closes session**: On `PTT_TRACK_ENDED`, logs duration, removes from map
-- **Response includes ID**: `{ pttSessionId: "..." }` returned to agent
-- **Agent stores ID**: `PttSessionState` class tracks `ptt_session_id` per track
+- **Audio buffering**: `PttSessionState.audio_buffer` stores raw PCM frames
+- **Whisper integration**: Uses `faster-whisper` with `small.en` model, CPU, int8
+- **WAV conversion**: Buffers combined and written to in-memory WAV for Whisper
+- **COMMAND_TRANSCRIBED**: New event with `text`, `confidence`, `latencyMs`
 
-### Day 2 Target #2: Audio Capture Hook - DONE
+### Day 3 #2: GM Step - DONE
 
-- **Agent logs start**: `ptt_audio_frames_started` with track/identity/session
-- **Agent logs stop**: `ptt_audio_frames_stopped` with frame count
-- **Frame counting**: Ready for STT buffer integration
-- **AudioStream**: Async iteration over `rtc.AudioStream(track)`
+- **processCommand()**: Server function generates GM response
+- **Simple keyword logic**: For Day 3 demo (look, attack, help, go → responses)
+- **Policy validation**: Runs through `validateGMResponse()` from `gm_policy.ts`
+- **Fallback on violation**: Uses `getFallbackResponse()` if validation fails
+- **NarrationReady**: Returns inline in response `{ narration: NarrationReady }`
 
-### Day 2 Target #3: Command Placeholder - DONE
+### Day 3 #3: TTS + AI Track Publish - DONE
 
-- **CommandReceived event**: New type with `pttSessionId` field
-- **Agent emits**: On PTT end, emits `COMMAND_RECEIVED` with `text: "__placeholder__"`
-- **Server logs**: `command_received` with ptt_session_id and text
+- **Piper TTS**: Generates WAV via subprocess call
+- **ai_narration track**: Published to room as `LocalAudioTrack`
+- **Frame-by-frame playback**: 20ms frames pushed to `AudioSource`
+- **Fallback**: If piper unavailable, logs text and simulates timing
 
-### Event Flow (Day 2)
+### Day 3 #4: Ducking + Interruption - DONE
+
+- **Interruption rule**: `PTT_TRACK_DETECTED` while narration active → `interrupt_narration()`
+- **NarrationState.interrupted**: Flag checked during playback loop
+- **NARRATION_INTERRUPT**: Emitted with `reason: 'ptt'` when interrupted
+- **NARRATION_END**: Emitted with `durationMs` on normal completion
+
+### Event Flow (Day 3)
 
 ```
-PTT button held → LiveKit track published → Agent detects
+PTT button held → LiveKit track → Agent detects
   ↓
-Agent: emit PTT_TRACK_DETECTED → Server: create pttSessionId, return it
+Agent: interrupt any active narration
+Agent: buffer audio frames
   ↓
-Agent: start audio frame capture, log ptt_audio_frames_started
+PTT released → track ends
   ↓
-PTT button released → LiveKit track ends → Agent detects
+Agent: transcribe via Whisper
+Agent: emit COMMAND_TRANSCRIBED → Server
   ↓
-Agent: log ptt_audio_frames_stopped (frame_count=N)
-Agent: emit PTT_TRACK_ENDED → Server: close session, log duration
-Agent: emit COMMAND_RECEIVED (text="__placeholder__", pttSessionId) → Server: log
+Server: processCommand() → generate GM response
+Server: validate against gm_policy
+Server: return { narration: NarrationReady }
+  ↓
+Agent: receive NarrationReady
+Agent: generate TTS via piper
+Agent: publish ai_narration track
+Agent: emit NARRATION_START
+  ↓
+Audio plays in room (all participants hear)
+  ↓
+If PTT during playback → interrupt → NARRATION_INTERRUPT
+Else → complete → NARRATION_END
 ```
 
-### Design Constraint Locked
+### New Events Added
 
-> PTT track name must be the **only** trigger for command capture.
-> No wake words. No diarization. No "intent detection" from open mic.
-> Everything else stays social voice only.
+| Event | Source | Description |
+|-------|--------|-------------|
+| `COMMAND_TRANSCRIBED` | Agent | STT result with `text`, `latencyMs` |
+| `NARRATION_READY` | Server | GM response with `text`, `choices`, `mode` |
+| `NARRATION_START` | Agent | Narration playback begun |
+| `NARRATION_END` | Agent | Narration completed with `durationMs` |
+| `NARRATION_INTERRUPT` | Agent | Narration stopped by PTT |
 
-### Acceptance Criteria Status
+### Day 3 Done Criteria - MET
 
 | Criterion | Status |
 |-----------|--------|
-| PTT_TRACK_DETECTED arrives at server | ✅ |
-| Server returns pttSessionId | ✅ |
-| Agent logs audio frame start/stop | ✅ |
-| Server receives COMMAND_RECEIVED with session id | ✅ |
-| PTT_TRACK_ENDED closes the session | ✅ |
+| PTT audio captured | ✅ buffered to PttSessionState |
+| STT produces real text | ✅ via faster-whisper |
+| Server produces narration | ✅ processCommand() + validation |
+| Agent speaks into room | ✅ ai_narration track published |
+| Narration stops on second PTT | ✅ interrupt_narration() |
 
-### Ready for Verification
+### Docker Network Configuration
 
-Run `make demo` or manual test:
-1. Start docker compose
-2. Use LiveKit CLI to publish PTT track to `campaign-TEST`
-3. Check server logs for event sequence
-4. Verify pttSessionId flows through all events
+All services use internal docker network names:
+- Agent → Server: `http://server:3000`
+- Agent → LiveKit: `ws://livekit:7880`
+- Server → Redis: `redis://redis:6379`
+- Agent → Ollama: `http://ollama:11434`
 
 ### Commit
 
-`a4a5786` feat: Day 2 implementation | idempotency, PTT sessions, command pipeline
+`3aad039` feat: Day 3 walking skeleton | STT, GM response, TTS, interruption
 
 ### Links
 
-- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
-- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
 - https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/agent/src/main.py
+- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/apps/server/src/index.ts
+- https://raw.githubusercontent.com/Cybernetic-Revolt/dreamweaver/main/packages/shared/events.ts
+
+### Ready for Day 4
+
+The walking skeleton is complete. The full PTT → STT → GM → TTS → Narration loop closes, with PTT interruption working.
+
+Next priorities suggested:
+1. LLM integration (replace keyword-based GM with Ollama)
+2. State management (track game state across turns)
+3. Mobile app skeleton (React Native + Expo)
