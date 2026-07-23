@@ -41,11 +41,15 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - DATABASE_PATH=/data/dreamweaver.db
+      # Ollama LLM Game Master (server-side dynamic narration)
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
     volumes:
       - server_data:/data
     depends_on:
       - redis
       - livekit
+      - ollama
     restart: unless-stopped
 
   # AI Agent (GM + STT + TTS)

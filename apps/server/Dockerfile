@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Copy root package.json for workspace setup
 COPY package.json ./
-COPY bun.lockb* ./
+COPY bun.lock* ./
 
 # Copy shared package first
 COPY packages/shared ./packages/shared
