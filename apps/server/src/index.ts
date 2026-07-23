@@ -27,6 +27,7 @@ import {
   type CommandTranscribed,
   type NarrationReady,
   type NarrationInterrupt,
+  type TraceSummary,
   createInitialState,
   type GameState,
 } from '@dreamweaver/shared';
@@ -233,6 +234,61 @@ function closePttSession(event: PttTrackEnded): PttSession | null {
 }
 
 // ============================================================================
+// Room Command Lock (Day 8: Single active command per room)
+// ============================================================================
+
+interface RoomLock {
+  traceId: string;
+  identity: string;
+  lockedAt: number;
+}
+
+const roomLocks = new Map<string, RoomLock>();
+
+// Lock timeout - if command doesn't complete in 10s, release lock
+const ROOM_LOCK_TIMEOUT_MS = 10000;
+
+function tryAcquireRoomLock(roomName: string, traceId: string, identity: string): boolean {
+  const existing = roomLocks.get(roomName);
+  const now = Date.now();
+
+  // Check if existing lock is expired
+  if (existing && (now - existing.lockedAt) > ROOM_LOCK_TIMEOUT_MS) {
+    console.log(JSON.stringify({
+      level: 'warn',
+      msg: 'room_lock_expired',
+      room_name: roomName,
+      old_trace_id: existing.traceId,
+      new_trace_id: traceId,
+    }));
+    roomLocks.delete(roomName);
+  }
+
+  // If locked by another command, reject
+  if (roomLocks.has(roomName)) {
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'room_busy_rejected',
+      room_name: roomName,
+      rejected_trace_id: traceId,
+      active_trace_id: roomLocks.get(roomName)?.traceId,
+    }));
+    return false;
+  }
+
+  // Acquire lock
+  roomLocks.set(roomName, { traceId, identity, lockedAt: now });
+  return true;
+}
+
+function releaseRoomLock(roomName: string, traceId: string): void {
+  const lock = roomLocks.get(roomName);
+  if (lock && lock.traceId === traceId) {
+    roomLocks.delete(roomName);
+  }
+}
+
+// ============================================================================
 // Command Processing (Day 5: Intent + GM)
 // ============================================================================
 
@@ -240,6 +296,8 @@ interface ProcessResult {
   commandId: string;
   narration: NarrationReady | null;
   latency: LatencyLog;
+  rejected?: boolean;
+  rejectReason?: string;
 }
 
 interface LatencyLog {
@@ -248,22 +306,25 @@ interface LatencyLog {
   stt_ms: number;
   gm_ms: number;
   tts_ms: number;  // Will be filled by agent
+  publish_ms: number;  // Day 8: time to publish to Redis
   total_ms: number;
   text_len: number;
   narration_len: number;
   mode: string;
   intent: string;
+  result: 'ok' | 'timeout' | 'capped' | 'rejected' | 'interrupted' | 'skipped';
 }
 
 /**
  * Process a transcribed command and generate narration.
  * Day 5: Uses intent parser + deterministic GM + state management.
+ * Day 8: Room lock, enhanced trace summary.
  */
 async function processCommandAsync(event: CommandTranscribed): Promise<ProcessResult> {
   const { text, identity, sessionId, pttSessionId, roomName, latencyMs } = event;
   const commandId = generateEventId();
   const traceId = pttSessionId || commandId;
-  const gmStartTime = Date.now();
+  const commandStartTime = Date.now();
 
   // Initialize latency log
   const latency: LatencyLog = {
@@ -272,11 +333,13 @@ async function processCommandAsync(event: CommandTranscribed): Promise<ProcessRe
     stt_ms: latencyMs,
     gm_ms: 0,
     tts_ms: 0,  // Agent will log this
+    publish_ms: 0,
     total_ms: 0,
     text_len: text.length,
     narration_len: 0,
     mode: 'driving',
     intent: 'UNKNOWN',
+    result: 'ok',
   };
 
   // Validate roomName is present (required for Redis routing)
@@ -287,118 +350,153 @@ async function processCommandAsync(event: CommandTranscribed): Promise<ProcessRe
       ptt_session_id: pttSessionId,
       trace_id: traceId,
     }));
+    latency.result = 'skipped';
     return { commandId, narration: null, latency };
   }
 
-  // Skip placeholder/empty commands
-  const isPlaceholder = text.startsWith('__') && !text.includes('timeout');
-  if (!text || isPlaceholder || text.length < 2) {
-    console.log(JSON.stringify({
-      level: 'info',
-      msg: 'skipping_placeholder_command',
-      text,
-      trace_id: traceId,
-    }));
-    return { commandId, narration: null, latency };
+  // Day 8: Try to acquire room lock (single active command)
+  if (!tryAcquireRoomLock(roomName, traceId, identity)) {
+    latency.result = 'rejected';
+    latency.total_ms = Date.now() - commandStartTime;
+    return {
+      commandId,
+      narration: null,
+      latency,
+      rejected: true,
+      rejectReason: 'busy',
+    };
   }
 
-  // Get or create game state
-  let state = getOrCreateGameState(roomName, sessionId);
-
-  // Check if in quiet mode (STOP was issued)
-  if (state.quietUntil && Date.now() < state.quietUntil) {
-    // Parse to check if it's a wake-up command
-    const intent = parseIntent(text);
-    if (intent.type !== 'HELP' && intent.type !== 'STATUS' && intent.type !== 'LOOK') {
+  try {
+    // Skip placeholder/empty commands
+    const isPlaceholder = text.startsWith('__') && !text.includes('timeout');
+    if (!text || isPlaceholder || text.length < 2) {
       console.log(JSON.stringify({
         level: 'info',
-        msg: 'quiet_mode_active',
+        msg: 'skipping_placeholder_command',
+        text,
         trace_id: traceId,
-        until: state.quietUntil,
       }));
+      latency.result = 'skipped';
       return { commandId, narration: null, latency };
     }
-    // Wake-up command received, clear quiet mode
-    state.quietUntil = undefined;
-  }
 
-  // Parse intent
-  const intent = parseIntent(text);
-  latency.intent = describeIntent(intent);
+    // Get or create game state
+    let state = getOrCreateGameState(roomName, sessionId);
 
-  console.log(JSON.stringify({
-    level: 'info',
-    msg: 'intent_parsed',
-    intent_type: intent.type,
-    intent_target: intent.target,
-    raw_text: text,
-    trace_id: traceId,
-  }));
+    // Check if in quiet mode (STOP was issued)
+    if (state.quietUntil && Date.now() < state.quietUntil) {
+      // Parse to check if it's a wake-up command (use sync version for speed)
+      const { parseIntentSync } = await import('./intent');
+      const intent = parseIntentSync(text);
+      if (intent.type !== 'HELP' && intent.type !== 'STATUS' && intent.type !== 'LOOK') {
+        console.log(JSON.stringify({
+          level: 'info',
+          msg: 'quiet_mode_active',
+          trace_id: traceId,
+          until: state.quietUntil,
+        }));
+        latency.result = 'skipped';
+        return { commandId, narration: null, latency };
+      }
+      // Wake-up command received, clear quiet mode
+      state.quietUntil = undefined;
+    }
 
-  // Process intent with GM
-  const result = processIntent(state, intent, pttSessionId, traceId);
+    // Parse intent (async for natural language understanding)
+    const gmStartTime = Date.now();
+    const intent = await parseIntent(text);
+    latency.intent = describeIntent(intent);
 
-  // Calculate GM latency
-  latency.gm_ms = Date.now() - gmStartTime;
-  latency.narration_len = result.narration.text.length;
-  latency.mode = state.mode;
-
-  // Validate narration against driving policy
-  const validation = validateGMResponse({
-    narration: result.narration.text,
-    choices: result.narration.choices,
-  });
-
-  if (!validation.ok) {
     console.log(JSON.stringify({
-      level: 'warn',
-      msg: 'gm_response_validation_failed',
-      violations: validation.violations,
+      level: 'info',
+      msg: 'intent_parsed',
+      intent_type: intent.type,
+      intent_target: intent.target,
+      raw_text: text,
       trace_id: traceId,
     }));
-  }
 
-  // Apply state updates
-  if (Object.keys(result.stateUpdates).length > 0) {
-    state = { ...state, ...result.stateUpdates };
+    // Process intent with GM (async for Ollama LLM)
+    const result = await processIntent(state, intent, pttSessionId, traceId);
 
-    // Save lastNarration for REPEAT
-    state.lastNarration = {
-      narrationId: result.narration.eventId,
-      text: result.narration.text,
+    // Calculate GM latency
+    latency.gm_ms = Date.now() - gmStartTime;
+    latency.narration_len = result.narration.text.length;
+    latency.mode = state.mode;
+
+    // Validate narration against driving policy
+    const validation = validateGMResponse({
+      narration: result.narration.text,
       choices: result.narration.choices,
+    });
+
+    if (!validation.ok) {
+      console.log(JSON.stringify({
+        level: 'warn',
+        msg: 'gm_response_validation_failed',
+        violations: validation.violations,
+        trace_id: traceId,
+      }));
+      if (validation.violations?.some(
+        (v) => v.rule === 'MAX_NARRATION_WORDS' || v.rule === 'MAX_NARRATION_SECONDS',
+      )) {
+        latency.result = 'capped';
+      }
+    }
+
+    // Apply state updates
+    if (Object.keys(result.stateUpdates).length > 0) {
+      state = { ...state, ...result.stateUpdates };
+
+      // Save lastNarration for REPEAT
+      state.lastNarration = {
+        narrationId: result.narration.eventId,
+        text: result.narration.text,
+        choices: result.narration.choices,
+      };
+
+      saveGameState(state);
+    }
+
+    // Handle STOP intent specially - emit interruption
+    if (intent.type === 'STOP') {
+      const interrupt: NarrationInterrupt = {
+        type: 'NARRATION_INTERRUPT',
+        eventId: generateEventId(),
+        sessionId,
+        narrationId: state.lastNarration?.narrationId || '',
+        identity,
+        reason: 'stop_command',
+        ts: Date.now(),
+        traceId,
+      };
+      await publishInterruption(roomName, interrupt);
+      latency.result = 'interrupted';
+    }
+
+    // Publish narration to Redis with timing metadata
+    const publishStartTime = Date.now();
+    const enrichedNarration: NarrationReady & { serverPublishTs: number } = {
+      ...result.narration,
+      serverPublishTs: publishStartTime,
     };
+    await publishNarration(roomName, enrichedNarration as NarrationReady);
+    latency.publish_ms = Date.now() - publishStartTime;
 
-    saveGameState(state);
+    // Log latency summary
+    latency.total_ms = Date.now() - (event.ts - latencyMs);  // From PTT end to now
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'latency_summary',
+      ...latency,
+    }));
+
+    return { commandId, narration: result.narration, latency };
+  } finally {
+    // Always release lock
+    releaseRoomLock(roomName, traceId);
   }
-
-  // Handle STOP intent specially - emit interruption
-  if (intent.type === 'STOP') {
-    const interrupt: NarrationInterrupt = {
-      type: 'NARRATION_INTERRUPT',
-      eventId: generateEventId(),
-      sessionId,
-      narrationId: state.lastNarration?.narrationId || '',
-      identity,
-      reason: 'stop_command',
-      ts: Date.now(),
-      traceId,
-    };
-    await publishInterruption(roomName, interrupt);
-  }
-
-  // Log latency summary
-  latency.total_ms = Date.now() - (event.ts - latencyMs);  // From PTT end to now
-  console.log(JSON.stringify({
-    level: 'info',
-    msg: 'latency_summary',
-    ...latency,
-  }));
-
-  // Publish narration to Redis
-  await publishNarration(roomName, result.narration);
-
-  return { commandId, narration: result.narration, latency };
 }
 
 // ============================================================================
@@ -558,13 +656,45 @@ app.post('/events', async (c) => {
 
         // Process command asynchronously, return 202 Accepted
         const result = await processCommandAsync(cmd);
+
+        // Day 8: Handle busy rejection
+        if (result.rejected) {
+          return c.json({
+            status: 'rejected',
+            event_type: event.type,
+            reason: result.rejectReason,
+            message: 'One at a time.',
+          }, 429);
+        }
+
         return c.json({
           status: 'accepted',
           event_type: event.type,
           commandId: result.commandId,
           intent: result.latency.intent,
-          // Narration will be delivered via Redis pub/sub
+          result: result.latency.result,
         }, 202);
+      }
+
+      // Day 8: TRACE_SUMMARY from agent
+      case 'TRACE_SUMMARY': {
+        const trace = event as TraceSummary;
+        console.log(JSON.stringify({
+          level: 'info',
+          msg: 'trace_summary',
+          trace_id: trace.traceId,
+          room_name: trace.roomName,
+          identity: trace.identity,
+          intent: trace.intent,
+          ptt_ms: trace.ptt_ms,
+          stt_ms: trace.stt_ms,
+          gm_ms: trace.gm_ms,
+          tts_ms: trace.tts_ms,
+          publish_ms: trace.publish_ms,
+          total_ms: trace.total_ms,
+          result: trace.result,
+        }));
+        break;
       }
 
       default:
@@ -668,6 +798,85 @@ app.post('/auth/token', async (c) => {
   } catch (err) {
     console.error('token_generation_error', err);
     return c.json({ error: 'TOKEN_ERROR', message: 'Failed to generate token' }, 500);
+  }
+});
+
+// ============================================================================
+// Direct Command Endpoint (Day 7: bypasses STT)
+// ============================================================================
+
+interface DirectCommand {
+  roomName: string;
+  identity: string;
+  text: 'stop' | 'repeat' | 'help';
+  traceId?: string;
+}
+
+app.post('/command', async (c) => {
+  try {
+    const body = await c.req.json<DirectCommand>();
+
+    if (!body.roomName || !body.identity || !body.text) {
+      return c.json({ error: 'INVALID_REQUEST', message: 'Missing roomName, identity, or text' }, 400);
+    }
+
+    const { roomName, identity, text, traceId } = body;
+    const commandId = generateEventId();
+    const finalTraceId = traceId || commandId;
+
+    console.log(JSON.stringify({
+      level: 'info',
+      msg: 'direct_command_received',
+      command: text,
+      room_name: roomName,
+      identity,
+      trace_id: finalTraceId,
+    }));
+
+    // Map button text to full command text the GM understands
+    const commandTextMap: Record<string, string> = {
+      'stop': 'stop',
+      'repeat': 'repeat',
+      'help': 'help',
+    };
+
+    const normalizedText = commandTextMap[text.toLowerCase()] || text;
+
+    // Create a synthetic COMMAND_TRANSCRIBED event
+    const syntheticEvent: CommandTranscribed = {
+      type: 'COMMAND_TRANSCRIBED',
+      eventId: generateEventId(),
+      sessionId: roomName,
+      pttSessionId: finalTraceId,
+      identity,
+      roomName,
+      text: normalizedText,
+      latencyMs: 0, // No STT latency for direct commands
+      ts: Date.now(),
+      traceId: finalTraceId,
+    };
+
+    // Process through same async flow
+    const result = await processCommandAsync(syntheticEvent);
+
+    // Day 8: Handle busy rejection
+    if (result.rejected) {
+      return c.json({
+        status: 'rejected',
+        reason: result.rejectReason,
+        message: 'One at a time.',
+      }, 429);
+    }
+
+    return c.json({
+      status: 'accepted',
+      commandId: result.commandId,
+      intent: result.latency.intent,
+      result: result.latency.result,
+    }, 202);
+  } catch (err) {
+    console.error('command_error', err);
+    return c.json({ error: 'COMMAND_ERROR', message: 'Failed to process command' }, 500);
   }
 });
 

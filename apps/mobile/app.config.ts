@@ -4,6 +4,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'Dreamweaver',
   slug: 'dreamweaver',
+  owner: 'bilcos-organization',
   version: '0.1.0',
   orientation: 'portrait',
   icon: './assets/icon.png',
@@ -29,6 +30,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.RECORD_AUDIO',
       'android.permission.MODIFY_AUDIO_SETTINGS',
     ],
+    // Allow HTTP traffic (needed for local dev server)
+    usesCleartextTraffic: true,
   },
   plugins: [
     [
@@ -39,19 +42,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         },
         android: {
           minSdkVersion: 24,
+          // Explicitly allow cleartext traffic for local dev server
+          usesCleartextTraffic: true,
+          // Enable debugging network requests
+          networkSecurityConfig: './network_security_config.xml',
         },
-      },
-    ],
-    [
-      '@livekit/react-native-webrtc',
-      {
-        cameraPermission: false,
-        microphonePermission: 'Dreamweaver needs microphone access for voice commands.',
       },
     ],
   ],
   extra: {
     serverUrl: process.env.EXPO_PUBLIC_SERVER_URL || 'http://localhost:3000',
     livekitUrl: process.env.EXPO_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880',
+    eas: {
+      projectId: '966fcd83-7294-42b9-8abc-76800e578ff0',
+    },
   },
 });

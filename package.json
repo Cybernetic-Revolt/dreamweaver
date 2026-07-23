@@ -1,0 +1,13 @@
+{
+  "name": "dreamweaver",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:server": "cd apps/server && bun run dev",
+    "build:server": "cd apps/server && bun run build",
+    "build:shared": "cd packages/shared && bun run build"
+  }
+}

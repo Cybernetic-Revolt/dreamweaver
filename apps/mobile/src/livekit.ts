@@ -1,22 +1,24 @@
 /**
  * LiveKit connection and track management.
+ * Day 7: Enhanced reconnect handling, debug state.
+ * Day 9: Speaker audio routing.
  */
 
 import {
   Room,
   RoomEvent,
-  LocalParticipant,
-  RemoteParticipant,
   Track,
-  LocalTrack,
+  LocalAudioTrack,
   RemoteTrack,
+  RemoteTrackPublication,
+  LocalTrackPublication,
+  Participant,
   createLocalAudioTrack,
-  AudioCaptureOptions,
-  TrackPublishOptions,
-} from '@livekit/react-native';
+} from 'livekit-client';
+import { AudioSession } from '@livekit/react-native';
 import { TRACK_NAMES } from './constants';
 
-export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type SpeakingState = 'idle' | 'ptt' | 'narration';
 
 export interface LiveKitState {
@@ -25,25 +27,38 @@ export interface LiveKitState {
   error?: string;
 }
 
+export interface DebugState {
+  connectionState: ConnectionState;
+  micPublished: boolean;
+  pttPublishing: boolean;
+  lastNarrationId: string | null;
+}
+
 export interface LiveKitCallbacks {
   onStateChange: (state: LiveKitState) => void;
-  onNarrationStart: () => void;
+  onNarrationStart: (narrationId?: string) => void;
   onNarrationEnd: () => void;
+  onDebugChange?: (debug: DebugState) => void;
 }
 
 /**
  * LiveKit connection manager.
  * Handles room connection, mic track, PTT track, and narration subscription.
+ * Day 7: Enhanced reconnect, debug state tracking.
  */
 export class LiveKitManager {
   private room: Room | null = null;
-  private micTrack: LocalTrack | null = null;
-  private pttTrack: LocalTrack | null = null;
+  private micTrack: LocalAudioTrack | null = null;
+  private pttTrack: LocalAudioTrack | null = null;
   private callbacks: LiveKitCallbacks;
   private state: LiveKitState = {
     connectionState: 'disconnected',
     speakingState: 'idle',
   };
+
+  // Debug state
+  private lastNarrationId: string | null = null;
+  private pttWasActiveOnDisconnect: boolean = false;
 
   constructor(callbacks: LiveKitCallbacks) {
     this.callbacks = callbacks;
@@ -52,15 +67,40 @@ export class LiveKitManager {
   private updateState(updates: Partial<LiveKitState>) {
     this.state = { ...this.state, ...updates };
     this.callbacks.onStateChange(this.state);
+    this.emitDebugState();
+  }
+
+  private emitDebugState() {
+    if (this.callbacks.onDebugChange) {
+      this.callbacks.onDebugChange({
+        connectionState: this.state.connectionState,
+        micPublished: this.micTrack !== null,
+        pttPublishing: this.pttTrack !== null,
+        lastNarrationId: this.lastNarrationId,
+      });
+    }
   }
 
   /**
    * Connect to LiveKit room and publish mic track.
+   * @param speakerMode If true, routes audio to speaker instead of earpiece (default: true)
    */
-  async connect(wsUrl: string, token: string): Promise<void> {
+  async connect(wsUrl: string, token: string, speakerMode: boolean = true): Promise<void> {
     this.updateState({ connectionState: 'connecting', error: undefined });
 
     try {
+      // Configure audio session for speaker output
+      await AudioSession.configureAudio({
+        android: {
+          // Use speaker for output
+          preferredOutputList: speakerMode ? ['speaker'] : ['earpiece'],
+        },
+        ios: {
+          defaultOutput: speakerMode ? 'speaker' : 'earpiece',
+        },
+      });
+      await AudioSession.startAudioSession();
+
       // Create room instance
       this.room = new Room();
 
@@ -78,8 +118,27 @@ export class LiveKitManager {
       this.updateState({ connectionState: 'connected' });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Connection failed';
-      this.updateState({ connectionState: 'error', error: message });
+      this.updateState({ connectionState: 'disconnected', error: message });
       throw error;
+    }
+  }
+
+  /**
+   * Set speaker mode (routes audio to speaker or earpiece).
+   */
+  async setSpeakerMode(enabled: boolean): Promise<void> {
+    try {
+      await AudioSession.configureAudio({
+        android: {
+          preferredOutputList: enabled ? ['speaker'] : ['earpiece'],
+        },
+        ios: {
+          defaultOutput: enabled ? 'speaker' : 'earpiece',
+        },
+      });
+      console.log('[LiveKit] Speaker mode:', enabled ? 'ON' : 'OFF');
+    } catch (error) {
+      console.error('[LiveKit] Failed to set speaker mode:', error);
     }
   }
 
@@ -115,20 +174,28 @@ export class LiveKitManager {
   private async publishMicTrack(): Promise<void> {
     if (!this.room?.localParticipant) return;
 
-    const options: AudioCaptureOptions = {
+    // Clean up existing track if any
+    if (this.micTrack) {
+      try {
+        await this.room.localParticipant.unpublishTrack(this.micTrack);
+        this.micTrack.stop();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+      this.micTrack = null;
+    }
+
+    this.micTrack = await createLocalAudioTrack({
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
-    };
+    });
 
-    this.micTrack = await createLocalAudioTrack(options);
-
-    const publishOptions: TrackPublishOptions = {
+    await this.room.localParticipant.publishTrack(this.micTrack, {
       name: TRACK_NAMES.MIC,
       source: Track.Source.Microphone,
-    };
-
-    await this.room.localParticipant.publishTrack(this.micTrack, publishOptions);
+    });
+    this.emitDebugState();
   }
 
   /**
@@ -137,20 +204,16 @@ export class LiveKitManager {
   async startPtt(): Promise<void> {
     if (!this.room?.localParticipant || this.pttTrack) return;
 
-    const options: AudioCaptureOptions = {
+    this.pttTrack = await createLocalAudioTrack({
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
-    };
+    });
 
-    this.pttTrack = await createLocalAudioTrack(options);
-
-    const publishOptions: TrackPublishOptions = {
+    await this.room.localParticipant.publishTrack(this.pttTrack, {
       name: TRACK_NAMES.PTT,
       source: Track.Source.Microphone,
-    };
-
-    await this.room.localParticipant.publishTrack(this.pttTrack, publishOptions);
+    });
     this.updateState({ speakingState: 'ptt' });
   }
 
@@ -158,13 +221,73 @@ export class LiveKitManager {
    * Stop PTT - unpublish and destroy PTT track.
    */
   async stopPtt(): Promise<void> {
-    if (!this.room?.localParticipant || !this.pttTrack) return;
+    if (!this.pttTrack) return;
 
-    await this.room.localParticipant.unpublishTrack(this.pttTrack);
-    this.pttTrack.stop();
-    this.pttTrack = null;
+    try {
+      if (this.room?.localParticipant) {
+        await this.room.localParticipant.unpublishTrack(this.pttTrack);
+      }
+      this.pttTrack.stop();
+    } catch (e) {
+      // Ignore errors during cleanup
+    } finally {
+      this.pttTrack = null;
+      if (this.state.speakingState === 'ptt') {
+        this.updateState({ speakingState: 'idle' });
+      }
+    }
+  }
 
-    this.updateState({ speakingState: 'idle' });
+  /**
+   * Force stop PTT (for reconnect recovery).
+   */
+  private async forceStopPtt(): Promise<void> {
+    if (this.pttTrack) {
+      try {
+        this.pttTrack.stop();
+      } catch (e) {
+        // Ignore
+      }
+      this.pttTrack = null;
+    }
+    if (this.state.speakingState === 'ptt') {
+      this.updateState({ speakingState: 'idle' });
+    }
+    this.pttWasActiveOnDisconnect = false;
+  }
+
+  /**
+   * Handle reconnection - verify and republish mic, cleanup stuck PTT.
+   */
+  private async handleReconnect(): Promise<void> {
+    console.log('[LiveKit] Handling reconnect...');
+
+    // Force-stop any stuck PTT
+    if (this.pttWasActiveOnDisconnect || this.pttTrack) {
+      console.log('[LiveKit] Force-stopping PTT after reconnect');
+      await this.forceStopPtt();
+    }
+
+    // Verify mic is published, republish if needed
+    if (this.room?.localParticipant) {
+      const micPublications = this.room.localParticipant.audioTrackPublications;
+      let micFound = false;
+
+      micPublications.forEach((pub) => {
+        if (pub.trackName === TRACK_NAMES.MIC) {
+          micFound = true;
+        }
+      });
+
+      if (!micFound) {
+        console.log('[LiveKit] Mic not published, republishing...');
+        await this.publishMicTrack();
+      } else {
+        console.log('[LiveKit] Mic already published');
+      }
+    }
+
+    this.emitDebugState();
   }
 
   /**
@@ -174,15 +297,18 @@ export class LiveKitManager {
     if (!this.room) return;
 
     // Track subscribed - check for AI narration
-    this.room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant) => {
+    this.room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: Participant) => {
       if (publication.trackName === TRACK_NAMES.AI_NARRATION) {
+        // Extract narration ID from track metadata if available
+        const narrationId = publication.trackSid || `narr-${Date.now()}`;
+        this.lastNarrationId = narrationId;
         this.updateState({ speakingState: 'narration' });
-        this.callbacks.onNarrationStart();
+        this.callbacks.onNarrationStart(narrationId);
       }
     });
 
     // Track unsubscribed
-    this.room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication, participant) => {
+    this.room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: Participant) => {
       if (publication.trackName === TRACK_NAMES.AI_NARRATION) {
         if (this.state.speakingState === 'narration') {
           this.updateState({ speakingState: 'idle' });
@@ -193,15 +319,32 @@ export class LiveKitManager {
 
     // Connection state changes
     this.room.on(RoomEvent.Disconnected, () => {
+      // Remember if PTT was active
+      this.pttWasActiveOnDisconnect = this.pttTrack !== null;
       this.updateState({ connectionState: 'disconnected', speakingState: 'idle' });
     });
 
     this.room.on(RoomEvent.Reconnecting, () => {
-      this.updateState({ connectionState: 'connecting' });
+      // Remember if PTT was active before reconnecting
+      this.pttWasActiveOnDisconnect = this.pttTrack !== null;
+      this.updateState({ connectionState: 'reconnecting' });
     });
 
-    this.room.on(RoomEvent.Reconnected, () => {
+    this.room.on(RoomEvent.Reconnected, async () => {
       this.updateState({ connectionState: 'connected' });
+      // Handle reconnection recovery
+      await this.handleReconnect();
+    });
+
+    // Track muted/unmuted for debugging
+    this.room.on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication, participant: Participant) => {
+      console.log('[LiveKit] Local track unpublished:', publication.trackName);
+      if (publication.trackName === TRACK_NAMES.MIC) {
+        this.micTrack = null;
+      } else if (publication.trackName === TRACK_NAMES.PTT) {
+        this.pttTrack = null;
+      }
+      this.emitDebugState();
     });
   }
 
@@ -213,9 +356,28 @@ export class LiveKitManager {
   }
 
   /**
+   * Get debug state.
+   */
+  getDebugState(): DebugState {
+    return {
+      connectionState: this.state.connectionState,
+      micPublished: this.micTrack !== null,
+      pttPublishing: this.pttTrack !== null,
+      lastNarrationId: this.lastNarrationId,
+    };
+  }
+
+  /**
    * Check if connected.
    */
   isConnected(): boolean {
     return this.state.connectionState === 'connected';
+  }
+
+  /**
+   * Get room name (for commands).
+   */
+  getRoomName(): string | undefined {
+    return this.room?.name;
   }
 }

@@ -681,6 +681,120 @@ All tests must pass:
 
 ---
 
+## Day 7: Productization Tests
+
+### P1: Quick Join Connects Fast
+
+**Preconditions:** App launched, no previous session
+
+**Steps:**
+1. Tap "Quick Join" button
+
+**Expected:**
+- [ ] Connection established < 5 seconds
+- [ ] Room name auto-generated (campaign-{deviceId})
+- [ ] No typing required
+- [ ] Mic published automatically
+
+---
+
+### P2: Reserved STOP Button Works
+
+**Preconditions:** Connected, narration playing
+
+**Steps:**
+1. Tap STOP button during narration
+
+**Expected:**
+- [ ] Narration stops within 500ms
+- [ ] Button response immediate
+- [ ] No STT involved (deterministic)
+- [ ] Quiet mode activated
+
+---
+
+### P3: Reserved REPEAT Button Works
+
+**Preconditions:** Connected, previous narration completed
+
+**Steps:**
+1. Tap REPEAT button
+
+**Expected:**
+- [ ] Last narration replays
+- [ ] Same text/content as before
+- [ ] No STT involved (deterministic)
+- [ ] Response time consistent
+
+---
+
+### P4: Reserved HELP Button Works
+
+**Preconditions:** Connected to session
+
+**Steps:**
+1. Tap HELP button
+
+**Expected:**
+- [ ] Help narration plays
+- [ ] Lists available commands
+- [ ] No STT involved (deterministic)
+- [ ] Response within 2 seconds
+
+---
+
+### P5: Reconnect Recovery Works
+
+**Preconditions:** Connected, PTT working
+
+**Steps:**
+1. Enable airplane mode
+2. Wait 10 seconds
+3. Disable airplane mode
+
+**Expected:**
+- [ ] App shows "Reconnecting..." state
+- [ ] Reconnection within 15 seconds
+- [ ] PTT works immediately after reconnect
+- [ ] Mic republished if needed
+- [ ] No stuck PTT state
+
+---
+
+### P6: Narrations Never Overlap
+
+**Preconditions:** Connected, fast command input
+
+**Steps:**
+1. Say "look around"
+2. Immediately say "help" while first narration starts
+
+**Expected:**
+- [ ] First narration interrupted cleanly
+- [ ] Second narration plays
+- [ ] No overlapping audio
+- [ ] No audio piling up
+
+---
+
+### P7: Debug Line Updates
+
+**Preconditions:** App running
+
+**Steps:**
+1. Observe debug line at bottom
+2. Connect to room
+3. Start/stop PTT
+4. Receive narration
+
+**Expected:**
+- [ ] Connection state updates
+- [ ] mic:Y shows after connect
+- [ ] ptt:Y shows during PTT
+- [ ] narr:{id} shows after narration
+
+---
+
 ## Bug Severity Classification
 
 | Severity | Definition | Action |

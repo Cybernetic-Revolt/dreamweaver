@@ -12,7 +12,7 @@ services:
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     environment:
-      - LIVEKIT_KEYS=${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
     restart: unless-stopped
 
   # Redis for session cache
@@ -28,8 +28,8 @@ services:
   # Game Server
   server:
     build:
-      context: ../apps/server
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: apps/server/Dockerfile
     ports:
       - "3000:3000"
     environment:
@@ -60,12 +60,14 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       # Server URL for event emission (internal docker network)
       - SERVER_URL=http://server:3000
+      - REDIS_URL=redis://redis:6379
       - OLLAMA_URL=http://ollama:11434
       - WHISPER_MODEL=small.en
     depends_on:
       - livekit
       - ollama
       - server
+      - redis
     restart: unless-stopped
 
   # Ollama LLM
