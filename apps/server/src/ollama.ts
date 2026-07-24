@@ -23,6 +23,12 @@ interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   stream: false;
+  // Disable "thinking" for reasoning models (e.g. qwen3.x) so the response is
+  // the narration only — thinking tokens would blow the driving-safety budget.
+  think?: boolean;
+  // Keep the model resident in VRAM between turns to avoid cold-load latency
+  // (a cold load of a large model can take >10s; -1 pins it indefinitely).
+  keep_alive?: string | number;
   options?: {
     temperature?: number;
     num_predict?: number;
@@ -63,6 +69,8 @@ export async function generateResponse(
       model: cfg.model,
       prompt,
       stream: false,
+      think: false, // narration only — no chain-of-thought tokens
+      keep_alive: -1, // pin the model in VRAM so live turns stay warm (~1.7s)
       options: {
         temperature: 0.7,
         num_predict: 100, // Limit tokens for concise responses

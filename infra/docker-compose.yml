@@ -41,9 +41,12 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - DATABASE_PATH=/data/dreamweaver.db
-      # Ollama LLM Game Master (server-side dynamic narration)
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
+      # Ollama LLM Game Master (server-side dynamic narration).
+      # Points at the RTX-4090 workstation (DickMammoth, 10.10.1.96) for GPU
+      # inference — the VM has no GPU and CPU inference of a large model OOM-kills
+      # the memory-oversubscribed Proxmox host. Override via .env if the box moves.
+      - OLLAMA_URL=${OLLAMA_URL:-http://10.10.1.96:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.6:27b}
     volumes:
       - server_data:/data
     depends_on:
