@@ -46,11 +46,10 @@ services:
       # inference — the VM has no GPU and CPU inference of a large model OOM-kills
       # the memory-oversubscribed Proxmox host. Override via .env if the box moves.
       - OLLAMA_URL=${OLLAMA_URL:-http://10.10.1.96:11434}
-      # Share the model another local client already keeps permanently warm on
-      # the 4090 (qwen3-8b-ctx16k). One model = nothing evicts anything; warm
-      # narration ~0.7s. Rare collision with that client's job → graceful
-      # deterministic fallback. Override via .env.
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-8b-ctx16k:latest}
+      # Dedicated Ubuntu-side ollama on the 4090 (Linux systemd service, capped
+      # to OLLAMA_MAX_LOADED_MODELS=1). Small model keeps WSL GPU overhead in
+      # budget: llama3.2:3b narration ~0.5s warm. Override via .env.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
       - server_data:/data
     depends_on:
