@@ -46,7 +46,10 @@ services:
       # inference — the VM has no GPU and CPU inference of a large model OOM-kills
       # the memory-oversubscribed Proxmox host. Override via .env if the box moves.
       - OLLAMA_URL=${OLLAMA_URL:-http://10.10.1.96:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.6:27b}
+      # 8B (~6GB) coexists in the shared 4090's VRAM instead of evicting other
+      # models; ~1.1s warm narration. A 27B model gets evicted by other GPU work
+      # → cold reload → turn times out & falls back. Override via .env.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
     volumes:
       - server_data:/data
     depends_on:
