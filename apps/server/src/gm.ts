@@ -16,7 +16,7 @@ import {
   getNpcsDescription,
   QUEST_STEPS,
 } from './locations';
-import { generateResponse } from './ollama';
+import { generateResponse } from './deepseek';
 import { buildPrompt, suggestChoices } from './prompts';
 import { logger } from './logger';
 

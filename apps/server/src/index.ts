@@ -34,8 +34,12 @@ import {
 import { validateGMResponse } from '@dreamweaver/shared/gm_policy';
 import { parseIntent, describeIntent } from './intent';
 import { processIntent } from './gm';
+import { WEB_PAGE } from './webpage';
 
 const app = new Hono();
+
+// Web client — play Dreamweaver in a browser (no app needed).
+app.get('/', (c) => c.html(WEB_PAGE));
 
 // ============================================================================
 // SQLite Database (Game State)
@@ -873,6 +877,9 @@ app.post('/command', async (c) => {
       commandId: result.commandId,
       intent: result.latency.intent,
       result: result.latency.result,
+      // Narration for text/web clients (the voice path also gets it via Redis).
+      narration: result.narration?.text ?? null,
+      choices: result.narration?.choices ?? [],
     }, 202);
   } catch (err) {
     console.error('command_error', err);

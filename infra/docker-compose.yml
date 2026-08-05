@@ -41,16 +41,11 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
       - DATABASE_PATH=/data/dreamweaver.db
-      # Ollama LLM Game Master (server-side dynamic narration).
-      # Points at the RTX-4090 workstation (DickMammoth, 10.10.1.96) for GPU
-      # inference — the VM has no GPU and CPU inference of a large model OOM-kills
-      # the memory-oversubscribed Proxmox host. Override via .env if the box moves.
-      - OLLAMA_URL=${OLLAMA_URL:-http://10.10.1.96:11434}
-      # Share the model the local "automaton" agent already keeps warm on the
-      # native Windows ollama (qwen3:8b) → one model, no eviction; ~0.7s warm.
-      # NOTE: needs OLLAMA_NUM_PARALLEL>=2 on the ollama host, else a busy
-      # automaton worker blocks a game turn (it falls back to deterministic).
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      # DeepSeek cloud LLM Game Master (OpenAI-compatible). No local GPU needed.
+      # Key lives in infra/.env (gitignored), never in the repo.
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      - DEEPSEEK_URL=${DEEPSEEK_URL:-https://api.deepseek.com}
     volumes:
       - server_data:/data
     depends_on:
