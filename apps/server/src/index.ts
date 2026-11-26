@@ -34,6 +34,7 @@ import {
 import { validateGMResponse } from '@dreamweaver/shared/gm_policy';
 import { parseIntent, describeIntent } from './intent';
 import { processIntent } from './gm';
+import { isCreatingCharacter, handleCharacterCreation } from './character';
 import { WEB_PAGE } from './webpage';
 
 const app = new Hono();
@@ -407,10 +408,14 @@ async function processCommandAsync(event: CommandTranscribed): Promise<ProcessRe
       state.quietUntil = undefined;
     }
 
-    // Parse intent (async for natural language understanding)
+    // Day 9: character creation runs once per room before the normal
+    // GO/LOOK/TAKE intent parser - the player's free speech is consumed as
+    // name/archetype/trait answers instead.
     const gmStartTime = Date.now();
-    const intent = await parseIntent(text);
-    latency.intent = describeIntent(intent);
+    const intent = isCreatingCharacter(state)
+      ? { type: 'UNKNOWN' as const, rawText: text }
+      : await parseIntent(text);
+    latency.intent = isCreatingCharacter(state) ? 'CREATING_CHARACTER' : describeIntent(intent);
 
     console.log(JSON.stringify({
       level: 'info',
@@ -421,8 +426,10 @@ async function processCommandAsync(event: CommandTranscribed): Promise<ProcessRe
       trace_id: traceId,
     }));
 
-    // Process intent with GM (async for Ollama LLM)
-    const result = await processIntent(state, intent, pttSessionId, traceId);
+    // Process intent with GM (async for Ollama LLM), or continue character creation
+    const result = isCreatingCharacter(state)
+      ? handleCharacterCreation(state, text, pttSessionId, traceId)
+      : await processIntent(state, intent, pttSessionId, traceId);
 
     // Calculate GM latency
     latency.gm_ms = Date.now() - gmStartTime;

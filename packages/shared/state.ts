@@ -7,6 +7,18 @@
 
 export type GameMode = 'driving' | 'stationary';
 
+export type CharacterArchetype = 'fighter' | 'mage' | 'rogue';
+
+export interface Character {
+  name: string;
+  archetype: CharacterArchetype;
+  trait: string;
+}
+
+// Day 9: character creation runs once per room, before the adventure starts.
+// 'intro' = nobody has spoken yet, the next command triggers the welcome prompt.
+export type CreationStep = 'intro' | 'name' | 'archetype' | 'trait' | 'done';
+
 export interface GameState {
   sessionId: string;
   roomName: string;
@@ -16,6 +28,9 @@ export interface GameState {
   step: number;
   flags: Record<string, boolean>;
   inventory: string[];
+  character: Character | null;
+  creationStep: CreationStep;
+  characterDraft: Partial<Character>;
   lastNarration?: {
     narrationId: string;
     text: string;
@@ -38,6 +53,9 @@ export function createInitialState(sessionId: string, roomName: string): GameSta
     step: 0,
     flags: {},
     inventory: [],
+    character: null,
+    creationStep: 'intro',
+    characterDraft: {},
     updatedAt: Date.now(),
   };
 }

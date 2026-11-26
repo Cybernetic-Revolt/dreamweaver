@@ -17,7 +17,7 @@ const INTENT_GUIDANCE: Record<string, string> = {
   INVENTORY: 'List the items naturally, as if the player is checking their pack.',
   STATUS: 'Summarize the current situation and quest progress.',
   HELP: 'List available commands in a friendly, in-character way.',
-  FREEFORM: 'Answer the player\'s question or respond to their roleplay. Stay in character as the narrator. Be creative but consistent with the game world. If they ask about themselves, describe their character (a wandering adventurer in simple traveling clothes).',
+  FREEFORM: 'Answer the player\'s question or respond to their roleplay. Stay in character as the narrator. Be creative but consistent with the game world. If they ask about themselves, describe their character using the details given above.',
   UNKNOWN: 'Gently redirect the player. Suggest what they might try instead.',
 };
 
@@ -54,7 +54,11 @@ NPCs here: ${location.npcs.map((n) => n.replace('_', ' ')).join(', ') || 'none'}
     : 'Location: Unknown';
 
   // Build player context
+  const characterLine = state.character
+    ? `Player character: ${state.character.name}, a ${state.character.archetype} known for being ${state.character.trait}.`
+    : '';
   const playerContext = `
+${characterLine}
 Player inventory: ${state.inventory.length > 0 ? state.inventory.join(', ') : 'empty'}
 Quest: ${quest?.description || 'Explore the world'}`;
 

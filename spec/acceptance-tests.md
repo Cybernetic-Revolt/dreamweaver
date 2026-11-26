@@ -795,6 +795,67 @@ All tests must pass:
 
 ---
 
+## Day 9: Character Creation Tests
+
+### C1: Full Creation Flow
+
+**Preconditions:** Fresh room, no character created yet
+
+**Steps:**
+1. Player sends any first command (e.g. "hello")
+2. Player says "My name is Theron"
+3. Player says "I'm a Fighter"
+4. Player says "I have a scar across my left eye"
+
+**Expected:**
+- [ ] Step 1 response asks "What shall I call you?", ignoring the input text
+- [ ] Step 2 response acknowledges "Theron" and asks Fighter/Mage/Rogue
+- [ ] Step 3 response acknowledges Fighter and asks for a trait
+- [ ] Step 4 response says "Theron the fighter, [trait]. Your legend begins."
+- [ ] Character is persisted to game state (name, archetype, trait)
+
+---
+
+### C2: Unrecognized Archetype Re-Prompts
+
+**Preconditions:** Player has given their name, awaiting archetype
+
+**Steps:**
+1. Player says "I don't know" (no archetype keyword)
+
+**Expected:**
+- [ ] Creation step does not advance
+- [ ] AI re-asks "Are you a Fighter, a Mage, or a Rogue?"
+
+---
+
+### C3: Creation Blocks Normal Commands
+
+**Preconditions:** Character creation in progress (any step before done)
+
+**Steps:**
+1. Player says "look around" or "go north" during creation
+
+**Expected:**
+- [ ] Input is treated as a creation answer, not parsed as GO/LOOK
+- [ ] Normal adventure commands only work after creation completes
+
+---
+
+### C4: GM References Character After Creation
+
+**Preconditions:** Character creation complete
+
+**Steps:**
+1. Player says "look around"
+2. Player asks "who am I?"
+
+**Expected:**
+- [ ] GM narration is generated with the character's name/archetype/trait in context
+- [ ] Self-referential questions describe the created character, not a generic placeholder
+
+---
+
 ## Bug Severity Classification
 
 | Severity | Definition | Action |
