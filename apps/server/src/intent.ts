@@ -2,10 +2,10 @@
  * Intent Parser with Ollama NLU
  *
  * Parses player commands into structured intents.
- * Uses pattern matching for quick commands, the configured LLM for natural language.
+ * Uses pattern matching for quick commands, Ollama for natural language.
  */
 
-import { generateResponse } from './llm';
+import { generateResponse } from './ollama';
 import { logger } from './logger';
 
 export type IntentType =
@@ -97,7 +97,7 @@ function quickParse(rawText: string): ParsedIntent | null {
   return null;
 }
 
-// Prompt for intent parsing
+// Ollama prompt for intent parsing
 const INTENT_PARSE_PROMPT = `You are parsing player commands for a text adventure game.
 
 Given a player's input, determine the intent. Respond with ONLY a JSON object, no explanation.
@@ -140,7 +140,7 @@ export async function parseIntent(rawText: string): Promise<ParsedIntent> {
     return quickResult;
   }
 
-  // Use the configured LLM for natural language understanding
+  // Use Ollama for natural language understanding
   try {
     const prompt = INTENT_PARSE_PROMPT.replace('{INPUT}', rawText.replace(/"/g, '\\"'));
     const result = await generateResponse(prompt, { timeoutMs: 2000 });
@@ -153,7 +153,7 @@ export async function parseIntent(rawText: string): Promise<ParsedIntent> {
         const type = parsed.type?.toUpperCase() as IntentType;
 
         if (['GO', 'LOOK', 'TAKE', 'TALK', 'INVENTORY', 'STATUS', 'FREEFORM'].includes(type)) {
-          logger.info('llm_intent_parsed', {
+          logger.info('ollama_intent_parsed', {
             type,
             target: parsed.target,
             rawText,
@@ -168,7 +168,7 @@ export async function parseIntent(rawText: string): Promise<ParsedIntent> {
       }
     }
   } catch (e) {
-    logger.warn('llm_intent_parse_error', { error: String(e), rawText });
+    logger.warn('ollama_intent_parse_error', { error: String(e), rawText });
   }
 
   // Fallback: treat as freeform if it's a question or has multiple words
@@ -183,7 +183,7 @@ export async function parseIntent(rawText: string): Promise<ParsedIntent> {
 }
 
 /**
- * Synchronous parse for backwards compatibility (no LLM call).
+ * Synchronous parse for backwards compatibility (no Ollama).
  */
 export function parseIntentSync(rawText: string): ParsedIntent {
   const quickResult = quickParse(rawText);
