@@ -1,0 +1,9 @@
+# Let EAS run prebuild - don't upload local native folders
+/android
+/ios
+
+# Expo local state
+.expo
+
+# Logs
+*.log

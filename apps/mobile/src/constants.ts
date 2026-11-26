@@ -17,6 +17,7 @@ export const ROOM_PREFIX = 'campaign-';
 export const API = {
   TOKEN: '/auth/token',
   HEALTH: '/healthz',
+  COMMAND: '/command',
 } as const;
 
 // Default config

@@ -215,6 +215,24 @@ export interface ErrorEvent extends BaseEvent {
 }
 
 // ============================================================================
+// Trace Events (Day 8: End-to-end observability)
+// ============================================================================
+
+export interface TraceSummary extends BaseEvent {
+  type: 'TRACE_SUMMARY';
+  roomName: string;
+  identity: string;
+  intent: string;
+  ptt_ms: number;       // PTT duration (0 for reserved commands)
+  stt_ms: number;       // Speech-to-text latency
+  gm_ms: number;        // Game master processing
+  tts_ms: number;       // Text-to-speech generation
+  publish_ms: number;   // Time until first audio frame published
+  total_ms: number;     // End-to-end latency
+  result: 'ok' | 'timeout' | 'capped' | 'rejected' | 'interrupted' | 'skipped';
+}
+
+// ============================================================================
 // Union Types
 // ============================================================================
 
@@ -225,6 +243,7 @@ export type SessionEvent = SessionCreated | PlayerJoined | PlayerLeft |
                            PlayerReconnected | SessionPaused | SessionResumed | SessionEnded;
 export type AudioEvent = PttStart | PttEnd;
 export type AgentEvent = PttTrackDetected | PttTrackEnded;
+export type TraceEvent = TraceSummary;
 
 export type DreamweaverEvent =
   | CommandEvent
@@ -233,6 +252,7 @@ export type DreamweaverEvent =
   | SessionEvent
   | AudioEvent
   | AgentEvent
+  | TraceEvent
   | ErrorEvent;
 
 // ============================================================================

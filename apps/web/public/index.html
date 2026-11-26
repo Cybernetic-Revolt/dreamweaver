@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dreamweaver</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="setup" class="panel">
+    <h1>Dreamweaver</h1>
+    <p class="hint">A text-adventure GM in your browser. No app install required.</p>
+    <label>Server URL
+      <input id="serverUrl" type="text" placeholder="http://10.10.1.193:3000" />
+    </label>
+    <label>Room name
+      <input id="roomName" type="text" placeholder="campaign-dev" />
+    </label>
+    <label>Your name
+      <input id="identity" type="text" placeholder="player-1" />
+    </label>
+    <label class="checkbox">
+      <input id="autoSpeak" type="checkbox" checked />
+      Read narration aloud
+    </label>
+    <button id="enterBtn">Enter the world</button>
+    <p id="setupError" class="error"></p>
+  </div>
+
+  <div id="game" class="panel hidden">
+    <div id="log"></div>
+    <div id="choices"></div>
+    <form id="commandForm">
+      <input id="commandInput" type="text" autocomplete="off" placeholder="What do you do?" />
+      <button id="micBtn" type="button" title="Speak">🎤</button>
+      <button type="submit">Send</button>
+    </form>
+    <div id="quickActions">
+      <button data-cmd="look">Look</button>
+      <button data-cmd="inventory">Inventory</button>
+      <button data-cmd="status">Status</button>
+      <button data-cmd="help">Help</button>
+      <button data-cmd="repeat">Repeat</button>
+      <button data-cmd="stop">Stop</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

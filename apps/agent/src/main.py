@@ -22,6 +22,7 @@ import numpy as np
 import structlog
 import redis.asyncio as redis
 from livekit import agents, rtc
+from livekit.agents import cli
 
 logger = structlog.get_logger()
 
@@ -95,7 +96,7 @@ class PttSessionState:
 
 
 class NarrationState:
-    """State for active narration playback."""
+    """State for active narration playback. Day 8: Enhanced timing."""
 
     def __init__(self, narration_id: str, session_id: str, trace_id: str | None = None):
         self.narration_id = narration_id
@@ -103,6 +104,16 @@ class NarrationState:
         self.trace_id = trace_id
         self.started_at = time.time()
         self.interrupted = False
+        # Day 8: Timing for TRACE_SUMMARY
+        self.server_publish_ts: int = 0  # When server published to Redis
+        self.tts_start_ts: float = 0     # When TTS generation started
+        self.tts_end_ts: float = 0       # When TTS generation ended
+        self.first_frame_ts: float = 0   # When first audio frame published
+        self.ptt_ms: int = 0             # From narration payload
+        self.stt_ms: int = 0             # From narration payload
+        self.gm_ms: int = 0              # From narration payload
+        self.intent: str = "UNKNOWN"     # From narration payload
+        self.identity: str = ""          # Who issued command
 
 
 class DreamweaverAgent:
@@ -351,9 +362,15 @@ class DreamweaverAgent:
                 return None
 
             with wave.open(temp_path, "rb") as wav:
+                piper_sample_rate = wav.getframerate()
                 audio_data = wav.readframes(wav.getnframes())
 
             os.unlink(temp_path)
+
+            # Resample from Piper's rate (usually 22050) to LiveKit's rate (48000)
+            if piper_sample_rate != SAMPLE_RATE:
+                audio_data = self._resample_audio(audio_data, piper_sample_rate, SAMPLE_RATE)
+                logger.info("tts_resampled", from_rate=piper_sample_rate, to_rate=SAMPLE_RATE, trace_id=trace_id)
 
             # Normalize audio levels
             audio_data = normalize_audio(audio_data)
@@ -369,12 +386,27 @@ class DreamweaverAgent:
             return None
 
     async def play_narration(self, narration: dict):
-        """Play narration audio into the room."""
+        """Play narration audio into the room.
+
+        Day 7: Implements last-write-wins - if a new narration arrives while
+        one is playing, interrupt the current and start the new one.
+        """
         text = narration.get("text", "")
         trace_id = narration.get("traceId") or narration.get("pttSessionId")
 
         if not text:
             return
+
+        # Day 7: Last-write-wins - interrupt any active narration
+        if self._narration and not self._narration.interrupted:
+            logger.info(
+                "last_write_wins_interrupt",
+                old_narration_id=self._narration.narration_id,
+                new_trace_id=trace_id,
+            )
+            self._narration.interrupted = True
+            # Brief wait for the playback loop to notice the interruption
+            await asyncio.sleep(0.05)
 
         narration_id = generate_event_id()
         self._narration = NarrationState(
@@ -382,6 +414,14 @@ class DreamweaverAgent:
             session_id=narration.get("sessionId", self.room_name),
             trace_id=trace_id,
         )
+
+        # Day 8: Extract timing metadata from server
+        self._narration.server_publish_ts = narration.get("serverPublishTs", 0)
+        self._narration.ptt_ms = narration.get("ptt_ms", 0)
+        self._narration.stt_ms = narration.get("stt_ms", 0)
+        self._narration.gm_ms = narration.get("gm_ms", 0)
+        self._narration.intent = narration.get("intent", "UNKNOWN")
+        self._narration.identity = narration.get("identity", "")
 
         await self.emit_event({
             "type": "NARRATION_START",
@@ -391,20 +431,27 @@ class DreamweaverAgent:
             "traceId": trace_id,
         })
 
+        result = "ok"
         try:
             await self._init_audio_track()
 
+            # Day 8: Track TTS timing
+            self._narration.tts_start_ts = time.time()
             audio_data = await self.generate_tts(text, trace_id)
+            self._narration.tts_end_ts = time.time()
+
             if audio_data is None:
                 logger.info("narration_text_only", text=text, trace_id=trace_id)
                 await asyncio.sleep(len(text) * 0.05)
             else:
                 frame_size = SAMPLE_RATE // 50  # 20ms frames
                 frame_bytes = frame_size * 2
+                first_frame = True
 
                 for i in range(0, len(audio_data), frame_bytes):
                     if self._narration and self._narration.interrupted:
                         logger.info("narration_interrupted_during_playback", trace_id=trace_id)
+                        result = "interrupted"
                         break
 
                     chunk = audio_data[i : i + frame_bytes]
@@ -418,11 +465,18 @@ class DreamweaverAgent:
                         samples_per_channel=frame_size,
                     )
                     await self._audio_source.capture_frame(frame)
+
+                    # Day 8: Track first frame publish time
+                    if first_frame:
+                        self._narration.first_frame_ts = time.time()
+                        first_frame = False
+
                     await asyncio.sleep(0.02)
 
             duration_ms = (time.time() - self._narration.started_at) * 1000
 
             if self._narration.interrupted:
+                result = "interrupted"
                 await self.emit_event({
                     "type": "NARRATION_INTERRUPT",
                     "sessionId": self._narration.session_id,
@@ -442,8 +496,12 @@ class DreamweaverAgent:
                     "traceId": trace_id,
                 })
 
+            # Day 8: Emit TRACE_SUMMARY
+            await self._emit_trace_summary(result)
+
         except Exception as e:
             logger.error("narration_error", error=str(e), trace_id=trace_id)
+            result = "timeout"
         finally:
             self._narration = None
 
@@ -452,6 +510,55 @@ class DreamweaverAgent:
         if self._narration and not self._narration.interrupted:
             logger.info("interrupting_narration", narration_id=self._narration.narration_id, trace_id=self._narration.trace_id)
             self._narration.interrupted = True
+
+    async def _emit_trace_summary(self, result: str):
+        """Day 8: Emit TRACE_SUMMARY event with end-to-end timing."""
+        if not self._narration:
+            return
+
+        # Calculate timing components
+        tts_ms = int((self._narration.tts_end_ts - self._narration.tts_start_ts) * 1000) if self._narration.tts_end_ts > 0 else 0
+        publish_ms = int((self._narration.first_frame_ts - self._narration.tts_end_ts) * 1000) if self._narration.first_frame_ts > 0 else 0
+
+        # Total: from server publish to first frame (what user experiences after speaking)
+        total_ms = 0
+        if self._narration.server_publish_ts > 0 and self._narration.first_frame_ts > 0:
+            # server_publish_ts is in ms, first_frame_ts is in seconds
+            total_ms = int(self._narration.first_frame_ts * 1000 - self._narration.server_publish_ts)
+        elif self._narration.first_frame_ts > 0:
+            total_ms = int((self._narration.first_frame_ts - self._narration.started_at) * 1000)
+
+        trace_summary = {
+            "type": "TRACE_SUMMARY",
+            "eventId": generate_event_id(),
+            "traceId": self._narration.trace_id or self._narration.narration_id,
+            "roomName": self.room_name,
+            "identity": self._narration.identity,
+            "intent": self._narration.intent,
+            "ptt_ms": self._narration.ptt_ms,
+            "stt_ms": self._narration.stt_ms,
+            "gm_ms": self._narration.gm_ms,
+            "tts_ms": tts_ms,
+            "publish_ms": publish_ms,
+            "total_ms": total_ms,
+            "result": result,
+            "ts": int(time.time() * 1000),
+        }
+
+        await self.emit_event(trace_summary)
+
+        # Also log it locally for quick observability
+        logger.info(
+            "trace_summary",
+            trace_id=trace_summary["traceId"],
+            ptt_ms=trace_summary["ptt_ms"],
+            stt_ms=trace_summary["stt_ms"],
+            gm_ms=trace_summary["gm_ms"],
+            tts_ms=trace_summary["tts_ms"],
+            publish_ms=trace_summary["publish_ms"],
+            total_ms=trace_summary["total_ms"],
+            result=result,
+        )
 
     async def on_track_subscribed(
         self,
@@ -645,11 +752,23 @@ async def entrypoint(ctx: agents.JobContext):
 
     agent = DreamweaverAgent(room_name=ctx.room.name, room=ctx.room)
 
-    # Set up event handlers
-    ctx.room.on("track_subscribed", agent.on_track_subscribed)
-    ctx.room.on("track_unsubscribed", agent.on_track_unsubscribed)
-    ctx.room.on("participant_connected", agent.on_participant_connected)
-    ctx.room.on("participant_disconnected", agent.on_participant_disconnected)
+    # Set up event handlers (wrap async callbacks for new LiveKit SDK)
+    def on_track_subscribed(track, publication, participant):
+        asyncio.create_task(agent.on_track_subscribed(track, publication, participant))
+
+    def on_track_unsubscribed(track, publication, participant):
+        asyncio.create_task(agent.on_track_unsubscribed(track, publication, participant))
+
+    def on_participant_connected(participant):
+        asyncio.create_task(agent.on_participant_connected(participant))
+
+    def on_participant_disconnected(participant):
+        asyncio.create_task(agent.on_participant_disconnected(participant))
+
+    ctx.room.on("track_subscribed", on_track_subscribed)
+    ctx.room.on("track_unsubscribed", on_track_unsubscribed)
+    ctx.room.on("participant_connected", on_participant_connected)
+    ctx.room.on("participant_disconnected", on_participant_disconnected)
 
     # Connect to room
     await ctx.connect()
@@ -666,7 +785,7 @@ async def entrypoint(ctx: agents.JobContext):
 
 
 if __name__ == "__main__":
-    agents.cli.run_app(
+    cli.run_app(
         agents.WorkerOptions(
             entrypoint_fnc=entrypoint,
         )

@@ -1,6 +1,6 @@
 # Dreamweaver Infrastructure Commands
 
-.PHONY: up down logs clean seed demo keys health verify_day3 demo_loop
+.PHONY: up down logs clean seed demo keys health verify_day3 demo_loop verify_state demo_phone
 
 # Start all services
 up:
@@ -8,6 +8,7 @@ up:
 	@echo "Services starting..."
 	@echo "LiveKit: http://localhost:7880"
 	@echo "Server: http://localhost:3000"
+	@echo "Web client: http://localhost:8080"
 	@echo "Ollama: http://localhost:11434"
 
 # Stop all services
@@ -117,3 +118,70 @@ verify_day3:
 	@docker-compose logs 2>&1 | grep -E "(ptt_track_detected|ptt_audio_frames_started|transcription_complete|COMMAND_TRANSCRIBED|narration_ready|narration_received_from_redis|tts_generated)" | tail -20
 	@echo ""
 	@echo "If you see all event types above, Day 3 skeleton is working."
+
+# Day 8: State snapshot durability test
+verify_state:
+	@echo "=== Day 8 State Durability Test ==="
+	@echo ""
+	@echo "1. Sending 'look' command to create state..."
+	@curl -s -X POST http://localhost:3000/events \
+		-H "Content-Type: application/json" \
+		-d '{"type":"COMMAND_TRANSCRIBED","eventId":"state-test-1","sessionId":"test-session","pttSessionId":"state-ptt-1","roomName":"campaign-DURABILITY","identity":"test-player","text":"look","latencyMs":50,"ts":'$$(date +%s000)'}' | jq -r '.intent // .error'
+	@echo ""
+	@echo "2. Checking initial state..."
+	@curl -s http://localhost:3000/api/state/campaign-DURABILITY | jq -r '.location.name // "NOT_FOUND"'
+	@echo ""
+	@echo "3. Restarting server container..."
+	@docker-compose restart server
+	@sleep 5
+	@echo ""
+	@echo "4. Sending 'status' command after restart..."
+	@curl -s -X POST http://localhost:3000/events \
+		-H "Content-Type: application/json" \
+		-d '{"type":"COMMAND_TRANSCRIBED","eventId":"state-test-2","sessionId":"test-session","pttSessionId":"state-ptt-2","roomName":"campaign-DURABILITY","identity":"test-player","text":"status","latencyMs":50,"ts":'$$(date +%s000)'}' | jq -r '.intent // .error'
+	@echo ""
+	@echo "5. Verifying state persisted..."
+	@LOCATION=$$(curl -s http://localhost:3000/api/state/campaign-DURABILITY | jq -r '.location.name // "NOT_FOUND"'); \
+	if [ "$$LOCATION" = "NOT_FOUND" ]; then \
+		echo "FAIL: State not persisted across restart"; \
+		exit 1; \
+	else \
+		echo "PASS: State persisted. Location: $$LOCATION"; \
+	fi
+	@echo ""
+	@echo "=== State Durability Test Complete ==="
+
+# Day 8: Demo setup for phone testing
+demo_phone:
+	@echo "=== Dreamweaver Phone Demo Setup ==="
+	@echo ""
+	@LAN_IP=$$(hostname -I 2>/dev/null | awk '{print $$1}' || ipconfig getifaddr en0 2>/dev/null || echo "localhost"); \
+	echo "Your LAN IP: $$LAN_IP"; \
+	echo ""; \
+	echo "=== Mobile App Setup ==="; \
+	echo ""; \
+	echo "1. Create apps/mobile/.env:"; \
+	echo ""; \
+	echo "   EXPO_PUBLIC_SERVER_URL=http://$$LAN_IP:3000"; \
+	echo "   EXPO_PUBLIC_LIVEKIT_URL=ws://$$LAN_IP:7880"; \
+	echo ""; \
+	echo "2. Update infra/.env:"; \
+	echo ""; \
+	echo "   LIVEKIT_WS_URL_EXTERNAL=ws://$$LAN_IP:7880"; \
+	echo ""; \
+	echo "3. Restart services:"; \
+	echo ""; \
+	echo "   make down && make up"; \
+	echo ""; \
+	echo "4. Run Expo:"; \
+	echo ""; \
+	echo "   cd ../apps/mobile && npx expo start"; \
+	echo ""; \
+	echo "5. Scan QR code with Expo Go app"; \
+	echo ""; \
+	echo "=== Quick Connectivity Test ==="; \
+	echo ""; \
+	echo "Server: http://$$LAN_IP:3000/health"; \
+	echo "LiveKit: ws://$$LAN_IP:7880"; \
+	echo ""
+	@curl -s http://localhost:3000/health | jq -r '.status // "DOWN"' | xargs -I {} echo "Server status: {}"

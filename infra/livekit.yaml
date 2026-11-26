@@ -8,11 +8,10 @@ rtc:
   tcp_port: 7881
   use_external_ip: true
 
-# TURN server (for NAT traversal)
+# TURN server (disabled for local development)
+# For production, enable TURN with a domain for NAT traversal
 turn:
-  enabled: true
-  udp_port: 7882
-  tls_port: 5349
+  enabled: false
 
 # Redis for distributed state (optional for single-node)
 # redis:
@@ -27,7 +26,6 @@ logging:
 room:
   enabled_codecs:
     - mime: audio/opus
-      fmtp: stereo=1;sprop-stereo=1
   max_participants: 10
   empty_timeout: 300  # 5 minutes
   departure_timeout: 60  # 1 minute grace for reconnect

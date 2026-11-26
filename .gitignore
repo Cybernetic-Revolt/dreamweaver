@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+.env
+.env.bak*
+*.log
+dist/
+build/
+.DS_Store
